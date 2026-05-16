@@ -1,0 +1,118 @@
+# =============================================================================
+# EKF 配置 - 融合 odom (编码器) + IMU (Phidget) 提高定位精度
+# AUTO4508 Part 2 - Pioneer 3-AT skid-steer
+# =============================================================================
+#
+# 工作原理:
+#   /odom (来自 ariaNode, 编码器积分) → 提供 x, y 位置 (线速度可信)
+#   /imu  (来自 Phidget Spatial 3/3/3) → 提供 yaw 角度 (旋转可信)
+#   EKF  → 融合后输出 /odometry/filtered (x, y, yaw 都更准)
+#
+# skid-steer 车特性:
+#   - 轮子打滑, 旋转时编码器 yaw 不准 → 用 IMU yaw 代替
+#   - 直线行驶时编码器位置准 → 用 odom 的 x, y
+#
+# TF 树:
+#   EKF 负责广播 odom -> base_link 的 TF
+#   注意: ariaNode 如果也在发 odom->base_link TF, 会冲突!
+#         需要关掉 ariaNode 的 TF 广播, 只让 EKF 发
+# =============================================================================
+
+ekf_filter_node:
+  ros__parameters:
+    # --- 基本设置 ---
+    frequency: 30.0                 # EKF 更新频率 (Hz)
+    sensor_timeout: 0.1              # 传感器超时 (秒)
+    two_d_mode: true                 # 2D 模式 (忽略 z/roll/pitch, 地面机器人用)
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+    publish_tf: true                 # 发布 odom -> base_link TF
+    publish_acceleration: false
+    reset_on_time_jump: true
+
+    # --- 坐标系 ---
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom               # 融合输出在 odom 坐标系 (Part 2 不用 map)
+
+    # =========================================================================
+    # 输入源 1: 编码器里程计 (来自 ariaNode)
+    # =========================================================================
+    # odom0 配置: 15 个值, 对应 [x, y, z, roll, pitch, yaw,
+    #                              vx, vy, vz, vroll, vpitch, vyaw,
+    #                              ax, ay, az]
+    # true = 使用这个数据, false = 忽略
+    # =========================================================================
+    odom0: /odom
+    odom0_config: [true,  true,  false,      # x, y 位置用
+                   false, false, false,      # 不用 roll, pitch, yaw (yaw 让 IMU 提供)
+                   true,  false, false,      # vx 线速度用
+                   false, false, true,       # vyaw 角速度用
+                   false, false, false]      # 不用加速度
+    odom0_queue_size: 10
+    odom0_nodelay: false
+    odom0_differential: false                # false: 绝对值, true: 增量
+    odom0_relative: false
+    odom0_pose_rejection_threshold: 5.0      # 异常值阈值 (Mahalanobis 距离)
+    odom0_twist_rejection_threshold: 1.0
+
+    # =========================================================================
+    # 输入源 2: IMU (来自 Phidget)
+    # =========================================================================
+    # IMU 主要贡献 yaw (旋转角度), skid-steer 里 IMU yaw 比编码器准很多
+    # =========================================================================
+    imu0: /imu/data_raw
+    imu0_config: [false, false, false,       # 不用 IMU 的位置 (IMU 本来就没位置)
+                  false, false, true,        # 只用 yaw!
+                  false, false, false,       # 不用线速度
+                  false, false, true,        # 用 vyaw (角速度)
+                  false, false, false]       # 不用加速度 (可以试试加上)
+    imu0_queue_size: 10
+    imu0_nodelay: false
+    imu0_differential: false
+    imu0_relative: true                      # 相对起始值 (避免磁偏角问题)
+    imu0_pose_rejection_threshold: 0.8
+    imu0_twist_rejection_threshold: 0.8
+    imu0_linear_acceleration_rejection_threshold: 0.8
+    imu0_remove_gravitational_acceleration: true
+
+    # =========================================================================
+    # 过程噪声协方差 (15x15 对角矩阵, 只填对角线)
+    # 值越小, EKF 越相信自己的预测模型 (平滑但跟不上真实)
+    # 值越大, EKF 越相信传感器 (跟随传感器但噪声大)
+    # =========================================================================
+    process_noise_covariance: [0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]
+
+    # --- 初始估计协方差 (初始不确定度) ---
+    initial_estimate_covariance: [1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,    0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9, 0,
+                                  0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    1e-9]
