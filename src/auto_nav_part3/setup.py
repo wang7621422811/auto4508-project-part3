@@ -40,6 +40,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'teleop_keyboard = auto_nav_part3.teleop_keyboard:main',
             'state_manager = auto_nav_part3.state_manager:main',
             'mapping_service = auto_nav_part3.mapping_service:main',
             'waypoint_service = auto_nav_part3.waypoint_service:main',
