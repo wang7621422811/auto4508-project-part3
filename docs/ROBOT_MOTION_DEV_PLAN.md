@@ -11,6 +11,15 @@
 
 ---
 
+## Issues on Macos
+
+```
+# 打开rviz2黑屏问题
+export LIBGL_ALWAYS_SOFTWARE=1
+export QT_OPENGL=software
+rviz2
+```
+
 ## Pioneer 硬件列表
 
 - Pioneer 3-AT Outdoor Mobile Robot Platform 
