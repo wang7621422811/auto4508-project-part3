@@ -144,6 +144,20 @@ class TeleopKeyboard(Node):
 
 
 def main(args=None):
+    # termios requires a real TTY on stdin.  ros2 launch does not forward the
+    # terminal's stdin to child processes, so keyboard reading would fail with
+    # "Inappropriate ioctl for device".  Detect this early and give a clear hint.
+    if not sys.stdin.isatty():
+        print(
+            '[teleop_keyboard] ERROR: stdin is not a terminal.\n'
+            'Teleop must run in a foreground terminal, not via ros2 launch.\n'
+            'Use one of:\n'
+            '  ./scripts/launch.sh start teleop\n'
+            '  ros2 run auto_nav_part3 teleop_keyboard',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     rclpy.init(args=args)
     node = TeleopKeyboard()
     saved = termios.tcgetattr(sys.stdin)

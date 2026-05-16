@@ -166,6 +166,15 @@ do_run() {
     info "Rendering: LIBGL_ALWAYS_SOFTWARE=1  QT_OPENGL=software"
     echo ""
 
+    # Teleop must own the terminal directly — ros2 launch does not forward
+    # stdin to child processes, so termios keyboard reading fails with
+    # "Inappropriate ioctl for device".  Run the executable directly instead.
+    if [[ "$launch_name" == "teleop" ]]; then
+        info "Teleop: running via 'ros2 run' (requires direct terminal stdin)"
+        echo ""
+        exec ros2 run "$pkg" teleop_keyboard "${extra_args[@]}"
+    fi
+
     exec ros2 launch "$pkg" "${launch_name}.launch.py" "${extra_args[@]}"
 }
 
