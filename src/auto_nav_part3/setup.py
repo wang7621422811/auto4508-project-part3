@@ -1,8 +1,8 @@
 from glob import glob
 from setuptools import setup
-
+ 
 package_name = 'auto_nav_part3'
-
+ 
 setup(
     name=package_name,
     version='0.1.0',
@@ -22,11 +22,16 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'state_manager = auto_nav_part3.state_manager:main',
-            'mapping_service = auto_nav_part3.mapping_service:main',
+            # ── Core nodes (other members) ────────────────────────────────
+            'state_manager    = auto_nav_part3.state_manager:main',
+            'mapping_service  = auto_nav_part3.mapping_service:main',
             'waypoint_service = auto_nav_part3.waypoint_service:main',
-            'safety_monitor = auto_nav_part3.safety_monitor:main',
-            'ui_status = auto_nav_part3.ui_status:main',
+            'safety_monitor   = auto_nav_part3.safety_monitor:main',
+            'ui_status        = auto_nav_part3.ui_status:main',
+            # ── Member 2: Perception (three separate testable nodes) ──────
+            'colour_detector  = auto_nav_part3.colour_detector:main',
+            'greek_detector   = auto_nav_part3.greek_detector:main',
+            'photo_logger     = auto_nav_part3.photo_logger:main',
         ],
     },
 )
