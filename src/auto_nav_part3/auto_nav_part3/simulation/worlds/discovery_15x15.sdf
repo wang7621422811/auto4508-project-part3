@@ -164,5 +164,15 @@
       </link>
     </model>
 
+    <!-- ── Initial GUI camera: top-down, north (+Y) up, east (+X) right ──── -->
+    <!-- pitch=π/2 points camera straight down; yaw=π/2 rotates so +Y is up  -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>0 0 20 0 1.5708 1.5708</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+
   </world>
 </sdf>

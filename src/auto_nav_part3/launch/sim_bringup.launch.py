@@ -101,7 +101,7 @@ def _make_spawn_action(context, spawn_x, spawn_y, spawn_z):
                         '-z', z,
                         '-R', '0',
                         '-P', '0',
-                        '-Y', str(math.pi / 2),
+                        '-Y', '0',
                     ],
                     output='screen',
                     name='spawn_pioneer',
@@ -141,8 +141,8 @@ def generate_launch_description():
             'world', default_value=default_world,
             description='Absolute path to the Gazebo SDF world file.',
         ),
-        DeclareLaunchArgument('x', default_value='0.0',   description='Spawn X (m)'),
-        DeclareLaunchArgument('y', default_value='-6.5',  description='Spawn Y (m) — default: bottom-centre of 15×15 arena'),
+        DeclareLaunchArgument('x', default_value='-7.0',  description='Spawn X (m)'),
+        DeclareLaunchArgument('y', default_value='0.0',   description='Spawn Y (m)'),
         DeclareLaunchArgument('z', default_value='0.18',  description='Spawn Z (m)'),
         DeclareLaunchArgument(
             'gz_verbose', default_value='3',
@@ -211,6 +211,12 @@ def generate_launch_description():
         package='joint_state_publisher',
         executable='joint_state_publisher',
         name='joint_state_publisher',
+        parameters=[{
+            'robot_description': ParameterValue(
+                Command(['cat ', robot_description_path]),
+                value_type=str,
+            ),
+        }],
         output='screen',
     )
 

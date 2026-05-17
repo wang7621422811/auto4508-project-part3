@@ -99,7 +99,7 @@ class TeleopKeyboard(Node):
     def stop(self) -> None:
         self._send(0.0, 0.0)
 
-    def handle(self, key: str) -> bool:
+    def process_key(self, key: str) -> bool:
         """
         Process one key event.
         Returns False when the user requests shutdown (Ctrl+C).
@@ -165,7 +165,7 @@ def main(args=None):
     try:
         while rclpy.ok():
             key = _read_key(saved)
-            if not node.handle(key):
+            if not node.process_key(key):
                 break
     finally:
         print('\n  Stopping robot...')
