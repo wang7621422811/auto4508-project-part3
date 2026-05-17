@@ -1,0 +1,72 @@
+# =============================================================================
+# exploration.yaml — Frontier-based 自主探索节点配置 (M4.C4.1)
+# =============================================================================
+#
+# 对应节点：auto_nav_part3/exploration_node.py
+#
+# 激活方式：
+#   方式 A（调试）：auto_start: true → 节点启动后立即开始探索
+#   方式 B（生产）：auto_start: false + 发布 true 到 /part3/exploration/enable
+#                   由 mapping_service (C5.1) 在收到 /part3/mapping/start 时激活
+#
+# 覆盖率说明：
+#   coverage = free_cells / (free_cells + unknown_cells)
+#   仅在 home 周围 search_area_size×search_area_size 方形区域内统计。
+#   覆盖率 ≥ coverage_done_threshold 时探索自动停止。
+#
+# Frontier 过滤链（依次执行）：
+#   1. 面积 < min_frontier_size cells  → 丢弃（噪声）
+#   2. 质心超出 home±(search_area/2)   → 丢弃（不在任务区域）
+#   3. 与黑名单距离 < blacklist_radius → 丢弃（之前失败过）
+#
+# =============================================================================
+
+exploration_node:
+  ros__parameters:
+
+    # ── 激活 ─────────────────────────────────────────────────────────────────
+    # false：等待外部 /part3/exploration/enable 话题激活（生产模式）
+    # true ：节点启动后立即开始探索（调试/独立测试用）
+    auto_start: false
+
+    # ── Home 坐标 ─────────────────────────────────────────────────────────────
+    # auto_set_home=true：第一次循环时用机器人当前 TF 位置作为 home（推荐）
+    # auto_set_home=false：使用 home_x/home_y 参数（适合从已知出发点启动）
+    auto_set_home: true
+    home_x: 0.0    # map 帧坐标（auto_set_home=false 时生效）
+    home_y: 0.0
+
+    # ── 探索区域 ─────────────────────────────────────────────────────────────
+    # 以 home 为中心的正方形区域边长（m）。
+    # 15×15m 覆盖整个仿真 world（arena 为 15×15m）。
+    # 超出此区域的 frontier 被过滤掉，机器人不会探索边界外。
+    search_area_size: 15.0
+
+    # ── Frontier 过滤 ─────────────────────────────────────────────────────────
+    # frontier 聚类最小格子数（cell）。
+    # 地图分辨率 0.05m，10 cells ≈ 0.5m 宽的 frontier。
+    # 太小的 frontier 通常是地图噪声或极窄缝隙，不值得导航。
+    min_frontier_size: 10
+
+    # ── 覆盖率目标 ────────────────────────────────────────────────────────────
+    # 探索区域内 free/(free+unknown) ≥ 此值时停止。
+    # 0.90 = 90% 格子已变为 free（探索了九成区域）。
+    # 完美覆盖在实践中很难，90% 通常意味着可通行区域全部覆盖。
+    coverage_done_threshold: 0.90
+
+    # ── 导航参数 ─────────────────────────────────────────────────────────────
+    # 单次 Nav2 导航超时（秒）。
+    # 超过此时间仍未到达目标 → 认为卡住，放弃当前目标，换下一个 frontier。
+    # 45s：Pioneer 3-AT 在 15×15m 场地内最长路径约 20m，0.7m/s 跑 28s 足够，
+    # 45s 留出避障绕路余量。
+    nav_timeout_sec: 45.0
+
+    # 导航失败/超时后，在目标附近此半径内（m）的 frontier 也跳过。
+    # 0.8m：比 inflation_radius(0.55m) 稍大，避免重复尝试附近的等价点。
+    frontier_blacklist_radius: 0.8
+
+    # ── 主循环频率 ────────────────────────────────────────────────────────────
+    # 每秒几次检查地图、提取 frontier、做决策。
+    # 1.0 Hz 足够：frontier 提取在 300×300 地图上约 10ms，决策代价低。
+    # 提高到 2.0 可以更快响应地图变化，但 CPU 占用加倍。
+    loop_rate_hz: 1.0

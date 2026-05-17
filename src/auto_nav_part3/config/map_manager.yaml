@@ -1,0 +1,37 @@
+# =============================================================================
+# map_manager.yaml — 地图保存管理器配置 (M4.C4.2)
+# =============================================================================
+#
+# 对应节点：auto_nav_part3/mapping/map_manager.py
+#
+# 触发方式（两种，互不干扰）：
+#   1. 自动：探索节点发布 "coverage=done" 到 /part3/mapping/map_status
+#            → map_manager 自动保存（需 auto_save: true）
+#   2. 手动：ros2 service call /part3/mapping/save_map std_srvs/srv/Trigger {}
+#
+# 输出文件（在 save_dir 目录下）：
+#   <map_filename>.pgm   — nav2 map_server 可直接加载的二值灰度栅格
+#   <map_filename>.yaml  — 分辨率 / 原点 / 阈值元数据
+#   <map_filename>.png   — 可视化 PNG（实验报告截图用）
+#
+# =============================================================================
+
+map_manager:
+  ros__parameters:
+
+    # ── 输出目录 ──────────────────────────────────────────────────────────────
+    # 地图文件保存的绝对路径或 ~ 展开路径。
+    # 默认 ~/auto4508_artifacts/maps：所有组员的机器上都有统一位置。
+    # 可在 launch 文件的 parameters 中覆盖为项目 artifacts/maps/ 的绝对路径，
+    # 例如：{'save_dir': '/home/parallels/workspace/projects/auto4508-project-part3/artifacts/maps'}
+    save_dir: "~/auto4508_artifacts/maps"
+
+    # ── 输出文件基名 ───────────────────────────────────────────────────────────
+    # 三种格式（pgm / yaml / png）共用此基名，不含扩展名。
+    # 命名对应任务交付物名称，方便识别和归档。
+    map_filename: "discovery_map"
+
+    # ── 自动保存开关 ──────────────────────────────────────────────────────────
+    # true（默认）：检测到探索完成（coverage=done）时自动保存，无需人工干预。
+    # false：仅响应手动服务调用（/part3/mapping/save_map），用于调试或分步测试。
+    auto_save: true

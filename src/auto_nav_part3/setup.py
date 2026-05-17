@@ -31,7 +31,13 @@ for path in glob(package_name + '/simulation/worlds/*.sdf'):
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name],
+    packages=[
+        package_name,
+        package_name + '.mapping',
+        package_name + '.navigation',
+        package_name + '.system',
+        package_name + '.safety',
+    ],
     data_files=data_files,
     install_requires=['setuptools'],
     zip_safe=True,
@@ -42,12 +48,19 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'teleop_keyboard = auto_nav_part3.teleop_keyboard:main',
-            'state_manager = auto_nav_part3.state_manager:main',
-            'mapping_service = auto_nav_part3.mapping_service:main',
-            'waypoint_service = auto_nav_part3.waypoint_service:main',
-            'safety_monitor = auto_nav_part3.safety_monitor:main',
-            'ui_status = auto_nav_part3.ui_status:main',
+            # --- mapping/ ---
+            'exploration_node  = auto_nav_part3.mapping.exploration_node:main',
+            'map_manager       = auto_nav_part3.mapping.map_manager:main',
+            'mapping_service   = auto_nav_part3.mapping.mapping_service:main',
+            # --- navigation/ ---
+            'waypoint_service  = auto_nav_part3.navigation.waypoint_service:main',
+            # --- system/ ---
+            'state_manager     = auto_nav_part3.system.state_manager:main',
+            'ui_status         = auto_nav_part3.system.ui_status:main',
+            # --- safety/ ---
+            'safety_monitor    = auto_nav_part3.safety.safety_monitor:main',
+            'teleop_keyboard   = auto_nav_part3.safety.teleop_keyboard:main',
+            # --- top-level ---
             'camera_info_publisher = auto_nav_part3.camera_info_publisher:main',
         ],
     },

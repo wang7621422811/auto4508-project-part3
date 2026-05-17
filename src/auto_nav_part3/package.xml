@@ -23,6 +23,10 @@
   <exec_depend>navigation2</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
+  <!-- M4.C4.1：TF 查询（map→base_link）供探索节点获取机器人位置 -->
+  <exec_depend>tf2_ros</exec_depend>
+  <!-- M4.C4.1：numpy 用于 frontier 检测的向量化运算 -->
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

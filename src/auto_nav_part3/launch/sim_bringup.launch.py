@@ -18,6 +18,7 @@ sim_bringup.launch.py — Full Gazebo simulation bringup for the Pioneer 3-AT.
   7.  slam_toolbox             在线异步建图（生命周期节点，10 s 后启动）
   7a. slam configure/activate  bash 重试循环（10.5s 后）→ configure+activate
   M3. nav2_bringup.launch.py   Nav2 导航栈（15 s 后，use_nav2:=true 时启用）
+  M4. exploration_node         Frontier 自主探索（45 s 后，use_exploration:=true 时启用）
   8.  rviz2                    可视化（可选）
 
 EKF 定位说明 (M1.C1.1)
@@ -54,6 +55,7 @@ Launch arguments
   use_rviz      true/false   Show RViz2                 (default: true)
   use_slam      true/false   Run slam_toolbox mapping   (default: true)
   use_nav2      true/false   Run Nav2 navigation stack  (default: false)
+  use_exploration true/false Run frontier exploration   (default: false)
   world         path         Override world SDF file
   x/y/z         float        Spawn position             (default: -3.0 0 0.18)
   gz_verbose    0-4          Gz server verbosity        (default: 3)
@@ -180,12 +182,17 @@ def generate_launch_description():
             'use_nav2', default_value='false',
             description='Launch Nav2 navigation stack (M3). Requires use_slam=true and SLAM to be active first.',
         ),
+        DeclareLaunchArgument(
+            'use_exploration', default_value='false',
+            description='Launch frontier exploration node (M4). Requires use_nav2=true.',
+        ),
     ]
 
-    use_gz_gui = LaunchConfiguration('use_gz_gui')
-    use_rviz   = LaunchConfiguration('use_rviz')
-    use_slam   = LaunchConfiguration('use_slam')
-    use_nav2   = LaunchConfiguration('use_nav2')
+    use_gz_gui    = LaunchConfiguration('use_gz_gui')
+    use_rviz      = LaunchConfiguration('use_rviz')
+    use_slam      = LaunchConfiguration('use_slam')
+    use_nav2      = LaunchConfiguration('use_nav2')
+    use_exploration = LaunchConfiguration('use_exploration')
     world      = LaunchConfiguration('world')
     spawn_x    = LaunchConfiguration('x')
     spawn_y    = LaunchConfiguration('y')
@@ -433,6 +440,47 @@ def generate_launch_description():
         ],
     )
 
+    # ── M4. exploration_node + map_manager（可选）─────────────────────────────
+    # exploration_node：延迟 45s 启动。
+    #   Nav2 在 15s 启动，但 ARM64/Parallels 上 lifecycle_manager 激活全部节点
+    #   （controller / planner / bt_navigator 等共 10 个）需要约 20-30 秒，
+    #   因此 exploration 必须在 Nav2 完全 active 之后才能访问 /navigate_to_pose。
+    #   45s = 15s(Nav2 start) + 30s(lifecycle 激活余量)。
+    # map_manager：与 exploration_node 同时启动，订阅 /part3/mapping/map_status，
+    #   探索完成时自动保存地图。
+    exploration_config_path = os.path.join(pkg, 'config', 'exploration.yaml')
+    map_manager_config_path = os.path.join(pkg, 'config', 'map_manager.yaml')
+    exploration_node = TimerAction(
+        condition=IfCondition(use_exploration),
+        period=45.0,
+        actions=[
+            Node(
+                package='auto_nav_part3',
+                executable='exploration_node',
+                name='exploration_node',
+                output='screen',
+                parameters=[exploration_config_path, {'use_sim_time': True}],
+            ),
+        ],
+    )
+
+    # map_manager：C4.2 地图保存节点。
+    # 与 exploration_node 同条件、同延迟启动，确保在探索开始前就在监听
+    # /part3/mapping/map_status，不会错过 coverage=done 消息。
+    map_manager_node = TimerAction(
+        condition=IfCondition(use_exploration),
+        period=45.0,
+        actions=[
+            Node(
+                package='auto_nav_part3',
+                executable='map_manager',
+                name='map_manager',
+                output='screen',
+                parameters=[map_manager_config_path, {'use_sim_time': True}],
+            ),
+        ],
+    )
+
     # ── 5. Spawn robot — OpaqueFunction pre-processes URDF at launch time ────
     #   Replaces package://auto_nav_part3 → file:///absolute/path so that
     #   gz-common5-graphics can load .dae meshes without ROS package resolution.
@@ -467,5 +515,7 @@ def generate_launch_description():
         slam_node,              # 7.  SLAM 节点（10s 后，unconfigured 状态）
         slam_lifecycle,         # 7a. configure+activate 重试循环（10.5s 后开始）
         nav2_node,              # M3. Nav2 导航栈（15s 后，use_nav2:=true 时启用）
+        exploration_node,       # M4. Frontier 探索（20s 后，use_exploration:=true 时启用）
+        map_manager_node,       # M4. 地图保存管理器（20s 后，随 exploration 一起启动）
         rviz2,                  # 8.  可视化
     ])

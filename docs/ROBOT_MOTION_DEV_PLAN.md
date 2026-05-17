@@ -281,6 +281,11 @@ ros2 launch auto_nav_part3 sim_bringup.launch.py
 
 **5. 自检**：sim 里不碰遥控，调用 mapping start，机器人自动跑遍区域，`/map` 基本填满后停止。
 
+运行
+```
+  ros2 topic pub --once /part3/exploration/enable std_msgs/Bool '{data: false}'
+  ros2 topic pub --once /part3/exploration/enable std_msgs/Bool '{data: true}'
+```
 ---
 
 ### C4.2 — map_manager（地图保存 + artifact）

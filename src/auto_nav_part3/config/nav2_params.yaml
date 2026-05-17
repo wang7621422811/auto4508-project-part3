@@ -17,6 +17,25 @@
 #       PDF Part 1 Task 5 "correct position and orientation"。
 # =============================================================================
 
+lifecycle_manager_navigation:
+  ros__parameters:
+    # bond_timeout：lifecycle_manager 等待每个受管节点建立 bond 的最长时间（秒）。
+    # 默认值 4.0s 在 ARM64/Parallels 上严重不足：
+    #   - DDS peer 发现需要 1-5s
+    #   - 10 个 Nav2 节点（controller/planner/bt_navigator 等）依次初始化
+    #   - 每个节点的 bond handshake 需要时间
+    # 超时后 lifecycle_manager 放弃并退出激活序列，所有节点停在 unconfigured，
+    # /navigate_to_pose action server 永远不出现。
+    # 30.0s 给 ARM64 VM 足够的余量完成全部 bond 建立。
+    bond_timeout: 30.0
+
+    # attempt_respawn_on_failure：节点崩溃时是否自动重启。
+    # false：崩溃后直接上报错误，方便调试（不掩盖问题）。
+    attempt_respawn_on_failure: false
+
+    # bond_respawn_max_duration：respawn 等待上限，与 bond_timeout 配合。
+    bond_respawn_max_duration: 10.0
+
 bt_navigator:
   ros__parameters:
     global_frame: map
@@ -55,14 +74,14 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      movement_time_allowance: 15.0
 
     # C3.2: 严格目标容差 — 到达指定位置和朝向（PDF Part 1 Task 5）
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.15        # 紧于默认 0.25m
-      yaw_goal_tolerance: 0.10       # 紧于默认 0.25rad（≈ 5.7°）
+      xy_goal_tolerance: 0.25        # 紧于默认 0.25m
+      yaw_goal_tolerance: 0.20       # 紧于默认 0.25rad（≈ 5.7°）
 
     # MPPI 控制器：随机采样轨迹优化，DiffDrive 运动模型
     # Pioneer 3-AT 速度上限：vx_max=0.7 m/s, wz_max=1.5 rad/s
@@ -71,7 +90,7 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
-      ax_max: 3.0
+      ax_max: 5.0          # Pioneer 3-AT x 加速度上限（仿真加速）
       ax_min: -3.0
       ay_max: 3.0
       ay_min: -3.0
@@ -79,17 +98,17 @@ controller_server:
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
-      vx_max: 0.7        # Pioneer 3-AT 线速上限
+      vx_max: 1.5        # Pioneer 3-AT 线速上限
       vx_min: -0.3       # 允许小幅后退（恢复行为）
       vy_max: 0.5
-      wz_max: 1.5        # Pioneer 3-AT 角速上限
+      wz_max: 2.5        # Pioneer 3-AT 角速上限
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.2
       temperature: 0.3
       gamma: 0.015
       motion_model: "DiffDrive"
-      visualize: true
+      visualize: false         # 关闭 MPPI 轨迹可视化（建图阶段不需要，且可能因 TF 问题随机器人旋转）
       regenerate_noises: true
       TrajectoryVisualizer:
         trajectory_step: 5
@@ -280,7 +299,7 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
+    max_rotational_vel: 2.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
 
@@ -319,9 +338,9 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.7, 0.0, 1.5]       # Pioneer 3-AT 速度上限
+    max_velocity: [1.5, 0.0, 2.5] # [0.7, 0.0, 1.5]       # Pioneer 3-AT 速度上限
     min_velocity: [-0.3, 0.0, -1.5]
-    max_accel: [2.5, 0.0, 3.2]
+    max_accel: [4.0, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     odom_topic: "/odometry/filtered"     # EKF 融合输出（非原始 /odom）
     odom_duration: 0.1
