@@ -9,6 +9,8 @@ data_files = [
     ('share/' + package_name, ['package.xml']),
     ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
+    # M1.C1.1：安装 EKF 配置文件，让 launch 文件能用 get_package_share_directory 找到它
+    ('share/' + package_name + '/config', glob('config/*.yaml')),
 ]
 
 # Install the URDF in the expected package share path.

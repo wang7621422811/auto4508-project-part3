@@ -164,8 +164,8 @@
     <material>Gazebo/Black</material>
     <kp>1000000.0</kp>
     <kd>1.0</kd>
-    <mu1>1.0</mu1>
-    <mu2>1.0</mu2>
+    <mu1>0.4</mu1>  <!-- portait friction -->
+    <mu2>0.4</mu2>  <!-- side -->
   </gazebo>
   <joint name="front_left_wheel_joint" type="continuous">
     <axis xyz="0 1 0"/>
@@ -477,7 +477,12 @@
       <frame_id>odom</frame_id>
       <child_frame_id>base_link</child_frame_id>
       <odom_topic>odom</odom_topic>
-      <tf_topic>/tf</tf_topic>
+      <!-- <tf_topic>/tf</tf_topic> -->
+      <!-- ⚠️  TF 发布交给 ROS 侧的 robot_localization EKF 节点（C1.1）。                                   
+      将 tf_topic 改为一个不会被 ros_gz_bridge 桥接的内部话题，                                       
+      防止 Gazebo diff-drive 与 EKF 双源发布 odom→base_link TF，                                      
+      否则 TF 树会有两个矛盾来源，SLAM/Nav2 会出现位姿跳变。 -->                                      
+      <tf_topic>/gz/tf_not_bridged</tf_topic>                
     </plugin>
     <plugin
         filename="gz-sim-joint-state-publisher-system"
