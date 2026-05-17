@@ -17,6 +17,8 @@
   <exec_depend>joint_state_publisher</exec_depend>
   <!-- M1.C1.1：EKF 融合定位（odom + IMU → /odometry/filtered + odom→base_link TF） -->
   <exec_depend>robot_localization</exec_depend>
+  <!-- M2.C2.1：slam_toolbox 在线异步建图（/scan + TF → /map + map→odom TF） -->
+  <exec_depend>slam_toolbox</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

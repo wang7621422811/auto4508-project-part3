@@ -1,0 +1,150 @@
+# =============================================================================
+# slam_toolbox.yaml — slam_toolbox 在线异步建图配置 (M2.C2.1)
+# =============================================================================
+#
+# 工作原理：
+#   slam_toolbox 订阅 /scan（激光点云）和 TF odom→base_link（EKF 提供），
+#   用扫描匹配(ICP) + 闭环检测 构建 occupancy grid 地图，
+#   同时发布 TF map→odom，补全完整 TF 链：
+#       map → odom → base_link → laser_frame / imu_link / ...
+#
+# 数据流：
+#   /scan (LaserScan)  ──┐
+#                        ├─► slam_toolbox ─► /map (OccupancyGrid)
+#   TF: odom→base_link ──┘              └─► TF: map→odom
+#                                        └─► /slam_toolbox/* (服务)
+#
+# 运行模式选择：
+#   mapping     ← 本配置：在线从零开始建图（M2/M4 探索）
+#   localization：已有地图，定位不更新地图（M6 物理机可能用到）
+#   lifelong    ：持续融合更新地图
+#
+# =============================================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ── 坐标系（必须与 EKF / URDF 完全一致）─────────────────────────────────
+    odom_frame: odom          # 里程计帧，EKF 发布 odom→base_link
+    map_frame: map            # 全局地图帧，SLAM 发布 map→odom
+    base_frame: base_link     # 机器人本体帧
+    scan_topic: /scan         # 激光雷达话题（与 ros_gz_bridge 桥接一致）
+
+    # ── 运行模式 ─────────────────────────────────────────────────────────────
+    # mapping：每帧扫描都尝试改善地图，支持闭环检测和地图序列化
+    mode: mapping
+
+    # ── 地图分辨率 ───────────────────────────────────────────────────────────
+    # 每格 0.05m（5cm）。15×15m 地图约 300×300 = 90,000 格。
+    # 更小（0.025）细节更好但计算慢；更大（0.1）快但精度低。
+    resolution: 0.05
+
+    # ── 激光参数 ─────────────────────────────────────────────────────────────
+    # 超过此距离的扫描点被忽略。Pioneer SICK 激光有效范围约 10-25m，
+    # 设 15m 与 URDF 内雷达配置匹配，避免噪声点污染地图。
+    max_laser_range: 15.0
+
+    # ── 频率控制 ─────────────────────────────────────────────────────────────
+    # throttle_scans=1：处理每一帧扫描（不跳帧）。
+    # 若 CPU 压力大可改为 2（每隔 1 帧处理 1 帧）。
+    throttle_scans: 1
+
+    # 两次处理之间机器人至少移动的距离（m）。
+    # 静止时不重复插入相同扫描，减少计算量和噪声积累。
+    minimum_travel_distance: 0.5
+
+    # 两次处理之间机器人至少转过的角度（rad，约 28°）。
+    minimum_travel_heading: 0.5
+
+    # 相邻两帧扫描的最短时间间隔（秒）。防止高频激光数据堵塞处理队列。
+    minimum_time_interval: 0.5
+
+    # ── TF 发布 ──────────────────────────────────────────────────────────────
+    # map→odom TF 的发布周期（秒）= 0.02s ≈ 50 Hz。
+    # 发布频率越高，导航栈 TF 查询越流畅；设为 0 则只在更新时发布。
+    transform_publish_period: 0.02
+
+    # 查询 TF（如 odom→base_link）时允许的最大等待时间（秒）。
+    # EKF 以 30Hz 发布，0.2s 足够等到下一帧。
+    transform_timeout: 0.2
+
+    # TF buffer 缓存时长（秒）。较大的值允许 SLAM 处理稍旧的扫描。
+    tf_buffer_duration: 30.0
+
+    # ── 地图更新 ─────────────────────────────────────────────────────────────
+    # 每 5 秒重新栅格化一次地图（把扫描数据渲染成 OccupancyGrid 并发布）。
+    # 降低此值（如 1.0）地图更新更及时但 CPU 占用更高。
+    map_update_interval: 5.0
+
+    # ── 扫描匹配（ICP 精化）───────────────────────────────────────────────────
+    # use_scan_matching=true：用扫描匹配修正 odom 误差，提高建图精度。
+    # 对在草地/不平地面运动的 Pioneer 尤其重要（odom 容易打滑）。
+    use_scan_matching: true
+    use_scan_barycenter: true
+
+    # ── 扫描缓冲区 ───────────────────────────────────────────────────────────
+    # 内部维护最近 N 帧扫描用于扫描匹配。10 帧在内存和精度之间取得平衡。
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+
+    # ── 闭环检测 ─────────────────────────────────────────────────────────────
+    # 机器人回到之前去过的区域时，SLAM 识别出已知场景并"缝合"地图，
+    # 消除长时间漂移积累的误差（这是 SLAM 区别于纯 odom 的核心价值）。
+    do_loop_closing: true
+
+    # 连续 N 帧扫描必须在闭环候选附近才触发闭环，防止误检。
+    loop_match_minimum_chain_size: 10
+
+    # 闭环搜索半径（m）。机器人须在此范围内才尝试闭环匹配。
+    loop_search_maximum_distance: 3.0
+
+    # 闭环匹配质量阈值（粗/精两级）：0~1，越高要求越严格越不易误闭环。
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # 链接当前扫描与前一次匹配的最大距离（m）。
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+
+    # ── 相关性搜索参数（粗匹配用）────────────────────────────────────────────
+    # 在 ±0.5m × ±0.5m 范围内以 0.01m 步长搜索最优位姿。
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # 闭环时在更大的 ±8m 范围内搜索。
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ── 角度/距离惩罚参数（扫描匹配质量评分）────────────────────────────────
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349      # ≈ 0.2°
+    coarse_search_angle_offset: 0.349      # ≈ 20°
+    coarse_angle_resolution: 0.0349        # ≈ 2°
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+
+    # ── 求解器（Ceres 图优化）────────────────────────────────────────────────
+    # slam_toolbox 内部用 Ceres Solver 做位姿图优化（处理闭环约束）。
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ── 内存 ─────────────────────────────────────────────────────────────────
+    # 为 SLAM 栈分配 40MB。大地图或长时间建图时可增大。
+    stack_size_to_use: 40000000
+
+    # ── 调试 ─────────────────────────────────────────────────────────────────
+    # false：生产/演示时关闭详细日志，避免终端刷屏。
+    # true ：出现地图错位/漂移时开启，结合 ros2 topic echo /map 定位问题。
+    debug_logging: false
+
+    # 允许 RViz 的 slam_toolbox 插件手动拖拽地图约束（建图调试专用）。
+    enable_interactive_mode: true

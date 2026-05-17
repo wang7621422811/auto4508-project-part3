@@ -15,13 +15,23 @@ sim_bringup.launch.py — Full Gazebo simulation bringup for the Pioneer 3-AT.
   4.  ros_gz_bridge            Gz ↔ ROS2 话题桥（2 s 后）
   5.  ros_gz_sim create        在仿真中生成机器人（4 s 后）
   6.  ekf_filter_node          robot_localization EKF：odom+IMU 融合（3 s 后）
-  7.  rviz2                    可视化（可选）
+  7.  slam_toolbox             在线异步建图（生命周期节点，10 s 后启动）
+  7a. slam configure/activate  bash 重试循环（10.5s 后）→ configure+activate
+  8.  rviz2                    可视化（可选）
 
 EKF 定位说明 (M1.C1.1)
 ────────────────────────
   EKF 节点接管 odom→base_link 的 TF 发布权。
   URDF 里 diff-drive 的 <tf_topic> 已改为不桥接的内部话题，
   所以 /tf 中只有 EKF 这一个来源，不会出现双源冲突。
+
+SLAM 建图说明 (M2.C2.1)
+────────────────────────
+  slam_toolbox 订阅 /scan + TF odom→base_link，发布 /map 和 map→odom TF。
+  完整 TF 链：map → odom → base_link → {laser_frame, imu_link, ...}
+  ⚠️  async_slam_toolbox_node 在 Jazzy 中是生命周期节点（Lifecycle Node）：
+      启动后处于 unconfigured 状态，此时无任何订阅/发布。
+      必须显式调用 configure(11.5s) → activate(12.5s) 才能开始建图。
 
 ros_gz_bridge 话题表
 ─────────────────────
@@ -41,6 +51,7 @@ Launch arguments
 ────────────────
   use_gz_gui    true/false   Show Gazebo GUI            (default: true)
   use_rviz      true/false   Show RViz2                 (default: true)
+  use_slam      true/false   Run slam_toolbox mapping   (default: true)
   world         path         Override world SDF file
   x/y/z         float        Spawn position             (default: 0 0 0.18)
   gz_verbose    0-4          Gz server verbosity        (default: 3)
@@ -122,6 +133,8 @@ def generate_launch_description():
     simulation_dir = os.path.join(pkg, 'simulation')   # contains meshes/
     # EKF 配置文件路径（安装到 share/auto_nav_part3/config/）
     ekf_config_path = os.path.join(pkg, 'config', 'ekf.yaml')
+    # SLAM 配置文件路径
+    slam_config_path = os.path.join(pkg, 'config', 'slam_toolbox.yaml')
 
     # robot_description: same pattern as part3_minimal.launch.py (Command + cat)
     # so that FindPackageShare resolves at runtime, not import time.
@@ -143,6 +156,10 @@ def generate_launch_description():
             description='Launch RViz2.',
         ),
         DeclareLaunchArgument(
+            'use_slam', default_value='true',
+            description='Launch slam_toolbox online async mapping. Set false to skip SLAM (e.g. when loading a pre-built map).',
+        ),
+        DeclareLaunchArgument(
             'world', default_value=default_world,
             description='Absolute path to the Gazebo SDF world file.',
         ),
@@ -157,6 +174,7 @@ def generate_launch_description():
 
     use_gz_gui = LaunchConfiguration('use_gz_gui')
     use_rviz   = LaunchConfiguration('use_rviz')
+    use_slam   = LaunchConfiguration('use_slam')
     world      = LaunchConfiguration('world')
     spawn_x    = LaunchConfiguration('x')
     spawn_y    = LaunchConfiguration('y')
@@ -307,6 +325,59 @@ def generate_launch_description():
         ],
     )
 
+    # ── 7. slam_toolbox 在线建图节点 (M2.C2.1) ────────────────────────────────
+    # async_slam_toolbox_node 在 Jazzy 中是生命周期节点（Lifecycle Node）。
+    # 启动后处于 unconfigured 状态：仅有 /clock 订阅和生命周期管理服务，
+    # 没有 /scan 订阅、/map 发布或 map→odom TF。
+    # 必须显式执行 configure → activate 后才能开始建图（见下方 slam_configure/activate）。
+    #
+    # ⚠️  condition 必须放在 TimerAction 上，不能放在内部的 Node 上。
+    #     原因：TimerAction 回调中 LaunchConfiguration 的 context 求值顺序
+    #     与 launch 主流程不同，Node 上的 IfCondition 会静默失败（节点不启动）。
+    slam_node = TimerAction(
+        condition=IfCondition(use_slam),   # 控制整个定时器是否触发
+        period=10.0,
+        actions=[
+            Node(
+                package='slam_toolbox',
+                executable='async_slam_toolbox_node',
+                name='slam_toolbox',
+                output='screen',
+                parameters=[slam_config_path, {'use_sim_time': True}],
+            ),
+        ],
+    )
+
+    # ── 7a. slam_toolbox 生命周期激活 ─────────────────────────────────────────
+    # 两步生命周期迁移：unconfigured → configure → inactive → activate → active
+    #
+    # 用单个 bash 进程串行执行，避免两个独立 ExecuteProcess 因子进程 DDS 发现
+    # 竞态而失败。重试循环（最多 30×0.5s = 15s）等待 /slam_toolbox 进入 ROS 图。
+    slam_lifecycle = TimerAction(
+        condition=IfCondition(use_slam),
+        period=10.5,   # slam_toolbox 启动（10s）后 0.5s 开始尝试
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    # 轮询等待节点可被发现（DDS 发现需要时间），然后 configure + activate
+                    'i=0; '
+                    'until ros2 lifecycle set /slam_toolbox configure 2>/dev/null; do '
+                    '  i=$((i+1)); '
+                    '  [ $i -ge 30 ] && echo "[slam_lifecycle] timeout waiting for /slam_toolbox" && exit 1; '
+                    '  sleep 0.5; '
+                    'done && '
+                    'echo "[slam_lifecycle] configure OK" && '
+                    'sleep 0.5 && '
+                    'ros2 lifecycle set /slam_toolbox activate && '
+                    'echo "[slam_lifecycle] activate OK"',
+                ],
+                output='screen',
+                name='slam_lifecycle',
+            ),
+        ],
+    )
+
     # ── 5. Spawn robot — OpaqueFunction pre-processes URDF at launch time ────
     #   Replaces package://auto_nav_part3 → file:///absolute/path so that
     #   gz-common5-graphics can load .dae meshes without ROS package resolution.
@@ -337,5 +408,7 @@ def generate_launch_description():
         bridge,                 # 4. Gz↔ROS 话题桥（2 s 后）
         spawn_robot,            # 5. 生成机器人（4 s 后）
         ekf_node,               # 6. EKF 融合定位，发布 odom→base_link TF（3 s 后）
-        rviz2,                  # 7. 可视化
+        slam_node,              # 7.  SLAM 节点（10s 后，unconfigured 状态）
+        slam_lifecycle,         # 7a. configure+activate 重试循环（10.5s 后开始）
+        rviz2,                  # 8.  可视化
     ])
