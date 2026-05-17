@@ -48,6 +48,7 @@ setup(
             'waypoint_service = auto_nav_part3.waypoint_service:main',
             'safety_monitor = auto_nav_part3.safety_monitor:main',
             'ui_status = auto_nav_part3.ui_status:main',
+            'camera_info_publisher = auto_nav_part3.camera_info_publisher:main',
         ],
     },
 )

@@ -242,7 +242,7 @@ ros2 launch auto_nav_part3 sim_bringup.launch.py
 
 ---
 
-### C3.2 — 本地控制器验证（Part 1 Task 5）
+### C3.2 — 本地控制器验证（Part 1 Task 5） (这个Part3不需要，不做了)
 
 **1. 功能**：确认机器人能到达目标点的**正确位置和朝向**。
 

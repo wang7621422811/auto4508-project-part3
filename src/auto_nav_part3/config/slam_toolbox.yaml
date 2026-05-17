@@ -51,10 +51,12 @@ slam_toolbox:
 
     # 两次处理之间机器人至少移动的距离（m）。
     # 静止时不重复插入相同扫描，减少计算量和噪声积累。
-    minimum_travel_distance: 0.5
+    # 注：首帧扫描无论如何都会被处理；此参数控制后续帧。
+    # 0.2m（原 0.5m）：让地图在短距离移动后就能更新，避免小区域建图不足。
+    minimum_travel_distance: 0.2
 
-    # 两次处理之间机器人至少转过的角度（rad，约 28°）。
-    minimum_travel_heading: 0.5
+    # 两次处理之间机器人至少转过的角度（rad，约 11°）。
+    minimum_travel_heading: 0.2
 
     # 相邻两帧扫描的最短时间间隔（秒）。防止高频激光数据堵塞处理队列。
     minimum_time_interval: 0.5

@@ -17,6 +17,7 @@ sim_bringup.launch.py — Full Gazebo simulation bringup for the Pioneer 3-AT.
   6.  ekf_filter_node          robot_localization EKF：odom+IMU 融合（3 s 后）
   7.  slam_toolbox             在线异步建图（生命周期节点，10 s 后启动）
   7a. slam configure/activate  bash 重试循环（10.5s 后）→ configure+activate
+  M3. nav2_bringup.launch.py   Nav2 导航栈（15 s 后，use_nav2:=true 时启用）
   8.  rviz2                    可视化（可选）
 
 EKF 定位说明 (M1.C1.1)
@@ -52,8 +53,9 @@ Launch arguments
   use_gz_gui    true/false   Show Gazebo GUI            (default: true)
   use_rviz      true/false   Show RViz2                 (default: true)
   use_slam      true/false   Run slam_toolbox mapping   (default: true)
+  use_nav2      true/false   Run Nav2 navigation stack  (default: false)
   world         path         Override world SDF file
-  x/y/z         float        Spawn position             (default: 0 0 0.18)
+  x/y/z         float        Spawn position             (default: -3.0 0 0.18)
   gz_verbose    0-4          Gz server verbosity        (default: 3)
 """
 
@@ -65,10 +67,12 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
+    IncludeLaunchDescription,
     OpaqueFunction,
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import (
     Command,
@@ -135,6 +139,8 @@ def generate_launch_description():
     ekf_config_path = os.path.join(pkg, 'config', 'ekf.yaml')
     # SLAM 配置文件路径
     slam_config_path = os.path.join(pkg, 'config', 'slam_toolbox.yaml')
+    # Nav2 launch 文件路径（M3.C3.1）
+    nav2_launch_path = os.path.join(pkg, 'launch', 'nav2_bringup.launch.py')
 
     # robot_description: same pattern as part3_minimal.launch.py (Command + cat)
     # so that FindPackageShare resolves at runtime, not import time.
@@ -163,18 +169,23 @@ def generate_launch_description():
             'world', default_value=default_world,
             description='Absolute path to the Gazebo SDF world file.',
         ),
-        DeclareLaunchArgument('x', default_value='-7.0',  description='Spawn X (m)'),
+        DeclareLaunchArgument('x', default_value='-3.0',  description='Spawn X (m)'),
         DeclareLaunchArgument('y', default_value='0.0',   description='Spawn Y (m)'),
         DeclareLaunchArgument('z', default_value='0.18',  description='Spawn Z (m)'),
         DeclareLaunchArgument(
             'gz_verbose', default_value='3',
             description='Gazebo server log verbosity (0 = silent, 4 = debug).',
         ),
+        DeclareLaunchArgument(
+            'use_nav2', default_value='false',
+            description='Launch Nav2 navigation stack (M3). Requires use_slam=true and SLAM to be active first.',
+        ),
     ]
 
     use_gz_gui = LaunchConfiguration('use_gz_gui')
     use_rviz   = LaunchConfiguration('use_rviz')
     use_slam   = LaunchConfiguration('use_slam')
+    use_nav2   = LaunchConfiguration('use_nav2')
     world      = LaunchConfiguration('world')
     spawn_x    = LaunchConfiguration('x')
     spawn_y    = LaunchConfiguration('y')
@@ -297,6 +308,35 @@ def generate_launch_description():
         ],
     )
 
+    # ── 4a. CameraInfo 发布器 ──────────────────────────────────────────────
+    # RViz 的 Camera 显示需要同时订阅 Image 和 CameraInfo 话题。
+    # Gazebo 桥接只转发 /camera（图像），不生成 CameraInfo 标定消息。
+    # RViz 从 /camera 自动推导 CameraInfo 话题为 /camera_info，
+    # 本节点发布 sensor_msgs/CameraInfo 到 /camera_info 以匹配。
+    #
+    # 本节点从 Pioneer URDF 相机参数（640×480, HFOV=1.089 rad）计算内参矩阵 K，
+    # 使 RViz 能正确渲染相机画面。
+    camera_info_publisher = TimerAction(
+        period=2.5,
+        actions=[
+            Node(
+                package='auto_nav_part3',
+                executable='camera_info_publisher',
+                name='camera_info_publisher',
+                output='screen',
+                parameters=[{
+                    'use_sim_time': True,
+                    'width': 640,
+                    'height': 480,
+                    'horizontal_fov': 1.089,
+                    'frame_id': 'cam_optical_link',
+                    'publish_rate': 10.0,
+                    'camera_info_topic': '/camera_info',
+                }],
+            ),
+        ],
+    )
+
     # ── 6. EKF 定位节点 (M1.C1.1) ─────────────────────────────────────────
     # robot_localization 的 EKF 节点：融合 /odom + /imu → /odometry/filtered
     # 并发布 odom→base_link TF（publish_tf: true 在 ekf.yaml 中配置）。
@@ -378,6 +418,21 @@ def generate_launch_description():
         ],
     )
 
+    # ── M3. Nav2 导航栈（可选）────────────────────────────────────────────────
+    # 延迟 15s 启动：等待 SLAM configure+activate（~12-13s）完成并发布第一帧 /map 后，
+    # Nav2 的全局代价地图才能正确初始化。
+    # use_nav2=false（默认）时 TimerAction 不触发，不影响 M0–M2 工作流。
+    nav2_node = TimerAction(
+        condition=IfCondition(use_nav2),
+        period=15.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(nav2_launch_path),
+                launch_arguments={'use_sim_time': 'true'}.items(),
+            ),
+        ],
+    )
+
     # ── 5. Spawn robot — OpaqueFunction pre-processes URDF at launch time ────
     #   Replaces package://auto_nav_part3 → file:///absolute/path so that
     #   gz-common5-graphics can load .dae meshes without ROS package resolution.
@@ -406,9 +461,11 @@ def generate_launch_description():
         joint_state_publisher,  # 3a. 轮子关节零状态 → RSP 可立即计算 TF
         robot_state_publisher,  # 3b. URDF → 静态 TF 发布到 /tf_static
         bridge,                 # 4. Gz↔ROS 话题桥（2 s 后）
+        camera_info_publisher,  # 4a. CameraInfo 标定发布器（2.5 s 后）
         spawn_robot,            # 5. 生成机器人（4 s 后）
         ekf_node,               # 6. EKF 融合定位，发布 odom→base_link TF（3 s 后）
         slam_node,              # 7.  SLAM 节点（10s 后，unconfigured 状态）
         slam_lifecycle,         # 7a. configure+activate 重试循环（10.5s 后开始）
+        nav2_node,              # M3. Nav2 导航栈（15s 后，use_nav2:=true 时启用）
         rviz2,                  # 8.  可视化
     ])

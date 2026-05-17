@@ -19,6 +19,10 @@
   <exec_depend>robot_localization</exec_depend>
   <!-- M2.C2.1：slam_toolbox 在线异步建图（/scan + TF → /map + map→odom TF） -->
   <exec_depend>slam_toolbox</exec_depend>
+  <!-- M3.C3.1：Nav2 导航栈（全局/局部规划、避障、恢复行为） -->
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

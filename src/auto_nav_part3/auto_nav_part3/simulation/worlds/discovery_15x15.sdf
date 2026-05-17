@@ -167,6 +167,182 @@
       </link>
     </model>
 
+    <!--
+      ── Obstacles (0.5 × 0.5 × 0.6 m boxes) ────────────────────────────────
+      Each box has collision geometry so the SICK GPU LiDAR can detect it.
+      LiDAR scan height ≈ 0.46 m above ground; boxes are 0.6 m tall, so
+      the horizontal scan ray hits every box regardless of exact LiDAR height.
+
+      Layout (top-down view, +Y = up):
+
+          -7.5                   0                    +7.5  x →
+         ┌──────────────────────────────────────────────────┐  +7.5
+         │                    ob_n2                          │
+         │       ob_nw              ob_ne                    │
+         │                                                   │
+         │  ob_w                         ob_e                │
+         │                    ob_c                           │
+         │       ob_sw              ob_se                    │
+         │                    ob_s2                          │
+         └──────────────────────────────────────────────────┘  -7.5
+           ↑ robot spawns here (-7, 0)
+
+      ob_w is the first obstacle the robot sees when it drives forward (+x).
+    -->
+
+    <model name="ob_w">
+      <static>true</static>
+      <pose>-3.5 0.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.8 0.4 0.1 1</ambient>
+            <diffuse>0.8 0.4 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_nw">
+      <static>true</static>
+      <pose>-3.5 3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.2 0.6 0.8 1</ambient>
+            <diffuse>0.2 0.6 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_sw">
+      <static>true</static>
+      <pose>-3.5 -3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.2 0.6 0.8 1</ambient>
+            <diffuse>0.2 0.6 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_c">
+      <static>true</static>
+      <pose>0.5 -1.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_n2">
+      <static>true</static>
+      <pose>0.5 5.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.1 0.8 0.3 1</ambient>
+            <diffuse>0.1 0.8 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_s2">
+      <static>true</static>
+      <pose>0.5 -5.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.1 0.8 0.3 1</ambient>
+            <diffuse>0.1 0.8 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_ne">
+      <static>true</static>
+      <pose>4.0 3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.6 0.2 0.8 1</ambient>
+            <diffuse>0.6 0.2 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_se">
+      <static>true</static>
+      <pose>4.0 -3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.6 0.2 0.8 1</ambient>
+            <diffuse>0.6 0.2 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_e">
+      <static>true</static>
+      <pose>6.5 0.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.8 0.4 0.1 1</ambient>
+            <diffuse>0.8 0.4 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <!-- ── Initial GUI camera: top-down, north (+Y) up, east (+X) right ──── -->
     <!-- pitch=π/2 points camera straight down; yaw=π/2 rotates so +Y is up  -->
     <gui fullscreen="0">
