@@ -73,10 +73,10 @@ ekf_filter_node:
     # 不使用 z/roll/pitch（2D 模式已忽略），不使用 vy/vz（差速机器人无横移）
     # 不使用加速度（轮式里程计不直接提供加速度）
     odom0_config: [true,  true,  false,    # x,     y,     z
-                   false, false, true,     # roll,  pitch, yaw
+                   false, false, false,    # roll,  pitch, yaw  ← 禁用：skid-steer 旋转积分不准
                    true,  false, false,    # vx,    vy,    vz
-                   false, false, true,     # vroll, vpitch,vyaw
-                   false, false, false]    # ax,    ay,    az   → IMU 只贡献 2 个维度：ax, ay
+                   false, false, false,    # vroll, vpitch,vyaw ← 禁用：由 IMU 提供
+                   false, false, false]    # ax,    ay,    az
 
     # differential=false：使用绝对位姿观测（odom 原点是机器人启动点，有意义）
     # 若改为 true 则只用位姿的变化量（适合没有清晰原点的传感器）
@@ -99,7 +99,7 @@ ekf_filter_node:
     imu0_config: [false, false, false,    # x,     y,     z
                   false, false, false,    # roll,  pitch, yaw
                   false, false, false,    # vx,    vy,    vz
-                  false, false, false,    # vroll, vpitch,vyaw
+                  false, false, true,     # vroll, vpitch,vyaw ← 启用：IMU 陀螺仪是旋转的可靠来源
                   true,  true,  false]    # ax,    ay,    az
 
     imu0_differential: false

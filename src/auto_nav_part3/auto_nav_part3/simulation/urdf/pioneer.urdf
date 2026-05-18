@@ -164,8 +164,8 @@
     <material>Gazebo/Black</material>
     <kp>1000000.0</kp>
     <kd>1.0</kd>
-    <mu1>0.4</mu1>  <!-- portait friction -->
-    <mu2>0.4</mu2>  <!-- side -->
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
   </gazebo>
   <joint name="front_left_wheel_joint" type="continuous">
     <axis xyz="0 1 0"/>
@@ -470,7 +470,7 @@
       <left_joint>back_left_wheel_joint</left_joint>
       <right_joint>back_right_wheel_joint</right_joint>
       <right_joint>front_right_wheel_joint</right_joint>
-      <wheel_separation>0.394</wheel_separation>
+      <wheel_separation>0.579</wheel_separation>
       <wheel_radius>0.111</wheel_radius>
       <odom_publish_frequency>20</odom_publish_frequency>
       <topic>cmd_vel</topic>

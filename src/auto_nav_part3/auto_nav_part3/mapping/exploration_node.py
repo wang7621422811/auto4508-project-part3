@@ -130,8 +130,14 @@ class ExplorationNode(Node):
         self._nav_start_time: float = 0.0
         self._current_goal: tuple[float, float] | None = None
 
-        # 黑名单：导航失败/超时的目标坐标列表，探索时跳过附近的 frontier
+        # 失败黑名单：导航失败/超时的目标，用 blacklist_radius 过滤附近 frontier
         self._blacklist: list[tuple[float, float]] = []
+        # 成功黑名单：成功到达的目标，用极小半径（0.05m = 1个格子）仅防止
+        # 立刻重选完全相同的点，不阻止机器人向角落逐格推进。 //TODO 真实robot需不需要更换在做检查
+        # 诊断显示 0.15m 半径使 8/15 clusters 被过滤（步长 ≈ 0.15m 时恰好等于半径）。
+        self._visited: list[tuple[float, float]] = []
+        _VISITED_RADIUS = 0.05  # = 地图分辨率 1 格，防立刻重选但不阻断逐步推进
+        self._visited_radius: float = _VISITED_RADIUS
 
         # home 是否已初始化（第一次从 TF 获取）
         self._home_initialized: bool = not self._auto_set_home
@@ -218,6 +224,7 @@ class ExplorationNode(Node):
             self._active = True
             self._exploration_done = False
             self._blacklist.clear()
+            self._visited.clear()
         elif not msg.data and self._active:
             self.get_logger().info('[Enable] 收到停止信号，中止探索')
             self._active = False
@@ -403,11 +410,18 @@ class ExplorationNode(Node):
         half = self._search_area / 2.0
         results: list[tuple[float, float, int]] = []
 
+        # 诊断计数器
+        n_too_small = 0
+        n_out_of_bounds = 0
+        n_blacklisted = 0
+        n_visited = 0
+
         for cluster in clusters:
             size = len(cluster)
 
             # 过滤 1：面积太小 → 丢弃（噪声格子，不值得导航）
             if size < self._min_frontier_size:
+                n_too_small += 1
                 continue
 
             # 计算质心（pixel 坐标，取均值）
@@ -422,14 +436,32 @@ class ExplorationNode(Node):
 
             # 过滤 2：超出 home±half 边界 → 丢弃（不在探索区域内）
             if abs(wx - self._home_x) > half or abs(wy - self._home_y) > half:
+                n_out_of_bounds += 1
                 continue
 
-            # 过滤 3：在黑名单附近 → 丢弃（之前导航失败过的区域）
+            # 过滤 3a：在失败黑名单附近 → 丢弃（之前导航失败过的区域）
             if any(math.hypot(wx - bx, wy - by) < self._blacklist_radius
                    for bx, by in self._blacklist):
+                n_blacklisted += 1
+                continue
+            # 过滤 3b：在成功黑名单极近处 → 丢弃（防止立刻重选同一点）
+            if any(math.hypot(wx - bx, wy - by) < self._visited_radius
+                   for bx, by in self._visited):
+                n_visited += 1
                 continue
 
             results.append((wx, wy, size))
+
+        # 每次只在结果为0时打印诊断，避免刷屏
+        if not results and clusters:
+            self.get_logger().warn(
+                f'[Frontier] 全部被过滤！'
+                f' 总clusters={len(clusters)}'
+                f' 太小={n_too_small}'
+                f' 越界={n_out_of_bounds}'
+                f' 失败黑名单={n_blacklisted}(半径{self._blacklist_radius}m,共{len(self._blacklist)}点)'
+                f' 成功黑名单={n_visited}(半径{self._visited_radius}m,共{len(self._visited)}点)'
+            )
 
         return results
 
@@ -682,11 +714,10 @@ class ExplorationNode(Node):
 
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info(f'[Nav✓] goal #{goal_id} 成功到达 {self._current_goal}')
-            # 成功到达后也加入黑名单，防止因 SICK 90° 后向盲区导致该点附近的
-            # frontier cells 残留，被下一轮循环重复选为目标（在原地打转）。
-            # 使用与失败时相同的 blacklist_radius（默认 0.8m）。
+            # 成功后加入 visited（小半径 0.15m），仅防止立刻重选同一点，
+            # 不阻止机器人步进接近角落（每步步长通常 > 0.15m）。
             if self._current_goal:
-                self._blacklist.append(self._current_goal)
+                self._visited.append(self._current_goal)
         elif status == GoalStatus.STATUS_CANCELED:
             self.get_logger().info(f'[Nav] goal #{goal_id} 已取消')
         else:

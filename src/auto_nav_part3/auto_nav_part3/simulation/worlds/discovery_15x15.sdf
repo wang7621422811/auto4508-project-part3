@@ -62,8 +62,8 @@
                 <mu>0.4</mu>          <!-- 主摩擦系数，草地约 0.3-0.5 -->
                 <mu2>0.4</mu2>        <!-- 横向摩擦 -->
                 <fdir1>1 0 0</fdir1>  <!-- 摩擦方向（各向异性效果） -->
-                <slip1>0.02</slip1>   <!-- 纵向滑移 (0=无滑移) -->
-                <slip2>0.02</slip2>   <!-- 横向滑移 -->
+                <slip1>0</slip1>   <!-- 纵向滑移 (0=无滑移) -->
+                <slip2>0</slip2>   <!-- 横向滑移 -->
               </ode>
             </friction>
           </surface>
@@ -192,7 +192,7 @@
 
     <model name="ob_w">
       <static>true</static>
-      <pose>-3.5 0.0 0.3 0 0 0</pose>
+      <pose>-4.5 1.0 0.3 0 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
@@ -344,35 +344,35 @@
     </model>
 
     <!--
-      ── 40 × 40 m enclosure walls ────────────────────────────────────────────
-      Four gray walls forming a closed 40 × 40 m square centered at origin.
-      Each wall: 40.4 m long × 0.2 m thick × 1.5 m tall.
+      ── 35 × 35 m enclosure walls ────────────────────────────────────────────
+      Four gray walls forming a closed 35 × 35 m square centered at origin.
+      Each wall: 35.4 m long × 0.2 m thick × 1.5 m tall.
       The ±0.4 m overrun on north/south fills the corner gaps where walls meet.
       z-centre = 0.75 m (half of 1.5 m height), flush with the ground plane.
       Both collision and visual geometry present so LiDAR detects the walls
       and the robot cannot drive through them.
 
-         -20                  0                 +20   x →
-        ┌─────────────────────────────────────────────┐  y = +20  (wall_north)
+         -17.5                0                +17.5  x →
+        ┌─────────────────────────────────────────────┐  y = +17.5  (wall_north)
         │                                             │
         │                                             │
         │               15 × 15 arena                 │
         │                                             │
         │                                             │
-        └─────────────────────────────────────────────┘  y = -20  (wall_south)
-      x=-20                                         x=+20
+        └─────────────────────────────────────────────┘  y = -17.5  (wall_south)
+      x=-17.5                                      x=+17.5
     -->
 
-    <!-- North wall  (y = +20) -->
+    <!-- North wall  (y = +17.5) -->
     <model name="wall_north">
       <static>true</static>
-      <pose>0 20 0.75 0 0 0</pose>
+      <pose>0 17.5 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.5 0.5 0.5 1</diffuse>
@@ -382,16 +382,16 @@
       </link>
     </model>
 
-    <!-- South wall  (y = -20) -->
+    <!-- South wall  (y = -17.5) -->
     <model name="wall_south">
       <static>true</static>
-      <pose>0 -20 0.75 0 0 0</pose>
+      <pose>0 -17.5 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.5 0.5 0.5 1</diffuse>
@@ -401,16 +401,16 @@
       </link>
     </model>
 
-    <!-- East wall  (x = +20) -->
+    <!-- East wall  (x = +17.5) -->
     <model name="wall_east">
       <static>true</static>
-      <pose>20 0 0.75 0 0 0</pose>
+      <pose>17.5 0 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.5 0.5 0.5 1</diffuse>
@@ -420,16 +420,16 @@
       </link>
     </model>
 
-    <!-- West wall  (x = -20) -->
+    <!-- West wall  (x = -17.5) -->
     <model name="wall_west">
       <static>true</static>
-      <pose>-20 0 0.75 0 0 0</pose>
+      <pose>-17.5 0 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.5 0.5 0.5 1</diffuse>
@@ -440,12 +440,12 @@
     </model>
 
     <!-- ── Initial GUI camera: top-down, north (+Y) up, east (+X) right ──── -->
-    <!-- pitch=π/2 points camera straight down; yaw=π/2 rotates so +Y is up  -->
+    <!-- pitch=π/2 points camera straight down; yaw=π/2 rotates so +Y is up  perspective -->
     <gui fullscreen="0">
       <camera name="user_camera">
         <pose>0 0 20 0 1.5708 1.5708</pose>
         <view_controller>orbit</view_controller>
-        <projection_type>perspective</projection_type>
+        <projection_type>orthographic</projection_type>
       </camera>
     </gui>
 

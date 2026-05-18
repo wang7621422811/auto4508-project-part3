@@ -32,21 +32,25 @@ exploration_node:
     # ── Home 坐标 ─────────────────────────────────────────────────────────────
     # auto_set_home=true：第一次循环时用机器人当前 TF 位置作为 home（推荐）
     # auto_set_home=false：使用 home_x/home_y 参数（适合从已知出发点启动）
-    auto_set_home: true
-    home_x: 0.0    # map 帧坐标（auto_set_home=false 时生效）
+    # 注意：auto_set_home=true 时 home 为 spawn 位置(-3,0)，导致搜索框偏心，
+    # 东侧 arena 区域(x>4.5)的 frontier 被过滤掉 → 探索提前终止。
+    # 改为 false + home=(0,0)，确保搜索框覆盖整个 arena。
+    auto_set_home: false
+    home_x: 0.0    # map 帧坐标：arena 中心
     home_y: 0.0
 
     # ── 探索区域 ─────────────────────────────────────────────────────────────
     # 以 home 为中心的正方形区域边长（m）。
-    # 15×15m 覆盖整个仿真 world（arena 为 15×15m）。
-    # 超出此区域的 frontier 被过滤掉，机器人不会探索边界外。
-    search_area_size: 15.0
+    # arena 为 15×15m，扩到 17m 给边界 frontier 留 1m 余量，
+    # 避免 arena 边缘的 frontier 质心因浮点对齐恰好被过滤。
+    search_area_size: 17.0
 
-    # ── Frontier 过滤 ─────────────────────────────────────────────────────────
+    # ── Frontier 过滤 //TODO────────────────────────────────────────────────────────────────
     # frontier 聚类最小格子数（cell）。
-    # 地图分辨率 0.05m，10 cells ≈ 0.5m 宽的 frontier。
-    # 太小的 frontier 通常是地图噪声或极窄缝隙，不值得导航。
-    min_frontier_size: 10
+    # 地图分辨率 0.05m，3 cells ≈ 0.15m 宽的 frontier。
+    # 诊断显示：54/62 clusters 因 < 10 被过滤（LiDAR 远距扫描把大片区域标成 free，
+    # 剩余 unknown 区域破碎成许多小 cluster）。降到 3 让这些小 cluster 也能被探索。
+    min_frontier_size: 3
 
     # ── 覆盖率目标 ────────────────────────────────────────────────────────────
     # 探索区域内 free/(free+unknown) ≥ 此值时停止。
@@ -62,8 +66,10 @@ exploration_node:
     nav_timeout_sec: 45.0
 
     # 导航失败/超时后，在目标附近此半径内（m）的 frontier 也跳过。
-    # 0.8m：比 inflation_radius(0.55m) 稍大，避免重复尝试附近的等价点。
-    frontier_blacklist_radius: 0.8
+    # 0.5m：缩小到仅屏蔽真正失败的目标点，允许同一 frontier 集群中
+    # 距离 > 0.5m 的其他点被尝试，解决角落 frontier 因质心在膨胀区
+    # 内不可达后整个角落被封锁的问题。
+    frontier_blacklist_radius: 0.5
 
     # ── 主循环频率 ────────────────────────────────────────────────────────────
     # 每秒几次检查地图、提取 frontier、做决策。

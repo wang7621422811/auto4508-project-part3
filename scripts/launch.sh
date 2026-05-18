@@ -48,6 +48,7 @@ usage() {
     echo -e "  ${CYAN}start <name>${RESET}    Build and launch <name>.launch.py"
     echo ""
     echo -e "${BOLD}Options (for 'start'):${RESET}"
+    echo -e "  ${CYAN}--clean${RESET}         Remove install/ and build/ before building"
     echo -e "  ${CYAN}--no-build${RESET}      Skip colcon build"
     echo -e "  ${CYAN}--args \"...\"${RESET}   Pass extra arguments to ros2 launch"
     echo ""
@@ -58,6 +59,19 @@ usage() {
     echo -e "  $(basename "$0") start part3_minimal use_rviz:=false"
     echo -e "  $(basename "$0") start part3_minimal --args \"use_rviz:=false use_robot_state_publisher:=true\""
     echo -e "  $(basename "$0") start part3_minimal --no-build"
+}
+
+# ── Step 0: Clean ─────────────────────────────────────────────────────────────
+do_clean() {
+    echo ""
+    echo -e "${BOLD}━━━ Clean ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    for dir in install build; do
+        if [[ -d "$WS_ROOT/$dir" ]]; then
+            info "Removing $WS_ROOT/$dir"
+            rm -rf "$WS_ROOT/$dir"
+        fi
+    done
+    ok "Clean done."
 }
 
 # ── Step 1: Build ──────────────────────────────────────────────────────────────
@@ -208,10 +222,15 @@ case "$COMMAND" in
         # Parse 'start' arguments
         LAUNCH_NAME=""
         NO_BUILD=false
+        DO_CLEAN=false
         EXTRA_ARGS=()
 
         while [[ $# -gt 0 ]]; do
             case "$1" in
+                --clean)
+                    DO_CLEAN=true
+                    shift
+                    ;;
                 --no-build)
                     NO_BUILD=true
                     shift
@@ -242,6 +261,10 @@ case "$COMMAND" in
         done
 
         [[ -z "$LAUNCH_NAME" ]] && { usage; die "Missing launch name. Use: $(basename "$0") start <name>"; }
+
+        if [[ "$DO_CLEAN" == true ]]; then
+            do_clean
+        fi
 
         if [[ "$NO_BUILD" == false ]]; then
             do_build
