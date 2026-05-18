@@ -55,28 +55,36 @@ slam_toolbox:
     # 0.2m（原 0.5m）：让地图在短距离移动后就能更新，避免小区域建图不足。
     minimum_travel_distance: 0.2
 
-    # 两次处理之间机器人至少转过的角度（rad，约 11°）。
-    minimum_travel_heading: 0.2
+    # 两次处理之间机器人至少转过的角度（rad，约 28°）。
+    # 原 0.2 rad（11°）时 Nav2 Spin 恢复（1.5 rad/s）每 0.13s 就触发一次扫描处理，
+    # ICP 匹配频繁失败退回 odom，造成"幽灵墙"（同一面墙记录多次）。
+    # 改为 0.5 rad（28°）：旋转时每帧间隔更大，ICP 有足够角度差可可靠匹配。
+    minimum_travel_heading: 0.5
 
-    # 相邻两帧扫描的最短时间间隔（秒）。防止高频激光数据堵塞处理队列。
-    minimum_time_interval: 0.5
+    # 相邻两帧扫描的最短时间间隔（秒）。
+    # 原 0.5s 太保守（仅 2 Hz），机器人稍快移动/旋转时 slam_toolbox 来不及
+    # 处理扫描产生 map→odom 修正，导致 TF 一直为 identity，RViz 中障碍物
+    # 看起来跟随机器人旋转。改为 0.05s（~20 Hz）确保每帧扫描都被处理。
+    minimum_time_interval: 0.05
 
     # ── TF 发布 ──────────────────────────────────────────────────────────────
-    # map→odom TF 的发布周期（秒）= 0.02s ≈ 50 Hz。
-    # 发布频率越高，导航栈 TF 查询越流畅；设为 0 则只在更新时发布。
-    transform_publish_period: 0.02
+    # map→odom TF 的发布周期（秒）。
+    # 原 0.02s≈50Hz 过高，ARM64 VM 实际只能跑到 ~10Hz，导致 TF 发布时间戳
+    # 不稳定，RViz 渲染时可能查不到对应 TF 而出现"障碍物随机器人旋转"。
+    # 改为 0.1s≈10Hz，与系统实际能力匹配，TF 发布稳定。
+    transform_publish_period: 0.1
 
     # 查询 TF（如 odom→base_link）时允许的最大等待时间（秒）。
-    # EKF 以 30Hz 发布，0.2s 足够等到下一帧。
-    transform_timeout: 0.2
+    # EKF 以 15Hz 发布，0.3s 足够等到 2 帧以上。
+    transform_timeout: 0.3
 
     # TF buffer 缓存时长（秒）。较大的值允许 SLAM 处理稍旧的扫描。
     tf_buffer_duration: 30.0
 
     # ── 地图更新 ─────────────────────────────────────────────────────────────
-    # 每 5 秒重新栅格化一次地图（把扫描数据渲染成 OccupancyGrid 并发布）。
-    # 降低此值（如 1.0）地图更新更及时但 CPU 占用更高。
-    map_update_interval: 5.0
+    # 地图重新栅格化发布周期（秒）。
+    # 原 5.0s 太慢，改为 1.0s 让 RViz 中的 /map 和 global_costmap 尽快反映最新扫描。
+    map_update_interval: 1.0
 
     # ── 扫描匹配（ICP 精化）───────────────────────────────────────────────────
     # use_scan_matching=true：用扫描匹配修正 odom 误差，提高建图精度。

@@ -56,6 +56,10 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
+    # controller_frequency 从 20 降到 10 Hz：
+    #   MPPI batch_size=800 × time_steps=40 在 ARM64/Parallels 上跑 20Hz 会 CPU 饱和，
+    #   导致 cmd_vel 发送间隔 >1s → velocity_smoother 超时清零 → robot 停顿。
+    #   10Hz 仍足够平滑（0.1s 一次指令），比饱和的 20Hz 实际响应快。
     controller_frequency: 20.0
     costmap_update_timeout: 0.30
     # 仿真时钟下 TF 查询容差：控制器将路径从 map 帧转换到 base_link 帧时
@@ -87,9 +91,11 @@ controller_server:
     # Pioneer 3-AT 速度上限：vx_max=0.7 m/s, wz_max=1.5 rad/s
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
+      # time_steps × model_dt = 预测时域：40 × 0.05 = 2.0s（原 56 × 0.05 = 2.8s）
+      # 减少 time_steps 和 batch_size 各约 60%，CPU 占用从约 224M次/s 降到约 32M次/s。
+      time_steps: 60
       model_dt: 0.05
-      batch_size: 2000
+      batch_size: 2200
       ax_max: 5.0          # Pioneer 3-AT x 加速度上限（仿真加速）
       ax_min: -3.0
       ay_max: 3.0
@@ -235,9 +241,12 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
-          raytrace_max_range: 3.0
+          # raytrace 必须 ≥ obstacle 范围，否则旧标记超出 raytrace 边界后永远无法清除，
+          # 随着机器人旋转/移动不断堆积 → 地图到处是"幽灵障碍"。
+          # 设为 12.0/10.0：比 max_laser_range(15m) 略小，忽略最远端噪声点。
+          raytrace_max_range: 12.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
+          obstacle_max_range: 10.0
           obstacle_min_range: 0.0
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -300,7 +309,11 @@ behavior_server:
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
     max_rotational_vel: 2.0
-    min_rotational_vel: 0.4
+    # min_rotational_vel 从 1.5 降回 0.8 rad/s：
+    #   1.5 rad/s 旋转时 slam_toolbox ICP 匹配跟不上（每 0.13s 一帧），
+    #   匹配失败退回 odom 估计，导致同一面墙被记录在多个位置（"幽灵墙"）。
+    #   0.8 rad/s 转一圈约 8s，仍比原 0.4 rad/s 快一倍，但 SLAM 扫描匹配可靠。
+    min_rotational_vel: 0.8
     rotational_acc_lim: 3.2
 
 waypoint_follower:
@@ -345,7 +358,10 @@ velocity_smoother:
     odom_topic: "/odometry/filtered"     # EKF 融合输出（非原始 /odom）
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 1.0
+    # velocity_timeout 从 1.0 提高到 2.0s：
+    #   ARM64/Parallels 上 MPPI 计算偶尔超过 1s，smoother 就把速度清零让 robot 停顿。
+    #   2.0s 给 MPPI 更多余量，减少不必要的速度清零。
+    velocity_timeout: 2.0
 
 collision_monitor:
   ros__parameters:

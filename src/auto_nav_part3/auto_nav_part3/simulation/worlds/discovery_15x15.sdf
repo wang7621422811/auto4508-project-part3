@@ -343,6 +343,102 @@
       </link>
     </model>
 
+    <!--
+      ── 40 × 40 m enclosure walls ────────────────────────────────────────────
+      Four gray walls forming a closed 40 × 40 m square centered at origin.
+      Each wall: 40.4 m long × 0.2 m thick × 1.5 m tall.
+      The ±0.4 m overrun on north/south fills the corner gaps where walls meet.
+      z-centre = 0.75 m (half of 1.5 m height), flush with the ground plane.
+      Both collision and visual geometry present so LiDAR detects the walls
+      and the robot cannot drive through them.
+
+         -20                  0                 +20   x →
+        ┌─────────────────────────────────────────────┐  y = +20  (wall_north)
+        │                                             │
+        │                                             │
+        │               15 × 15 arena                 │
+        │                                             │
+        │                                             │
+        └─────────────────────────────────────────────┘  y = -20  (wall_south)
+      x=-20                                         x=+20
+    -->
+
+    <!-- North wall  (y = +20) -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>0 20 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- South wall  (y = -20) -->
+    <model name="wall_south">
+      <static>true</static>
+      <pose>0 -20 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>40.4 0.2 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- East wall  (x = +20) -->
+    <model name="wall_east">
+      <static>true</static>
+      <pose>20 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- West wall  (x = -20) -->
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-20 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 40.0 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <!-- ── Initial GUI camera: top-down, north (+Y) up, east (+X) right ──── -->
     <!-- pitch=π/2 points camera straight down; yaw=π/2 rotates so +Y is up  -->
     <gui fullscreen="0">

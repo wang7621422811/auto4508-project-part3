@@ -24,7 +24,7 @@ map_manager:
     # 默认 ~/auto4508_artifacts/maps：所有组员的机器上都有统一位置。
     # 可在 launch 文件的 parameters 中覆盖为项目 artifacts/maps/ 的绝对路径，
     # 例如：{'save_dir': '/home/parallels/workspace/projects/auto4508-project-part3/artifacts/maps'}
-    save_dir: "~/auto4508_artifacts/maps"
+    save_dir: "artifacts/maps"
 
     # ── 输出文件基名 ───────────────────────────────────────────────────────────
     # 三种格式（pgm / yaml / png）共用此基名，不含扩展名。

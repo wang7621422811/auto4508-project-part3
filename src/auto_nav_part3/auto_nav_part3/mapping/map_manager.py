@@ -21,17 +21,23 @@ map_manager.py — 地图保存管理器 (M4.C4.2)
   <map_filename>.yaml  — 地图元数据（分辨率 / 原点 / 阈值）
   <map_filename>.png   — 可视化 PNG（报告截图用）
 
-保存流程：
-  ① 调用 `ros2 run nav2_map_server map_saver_cli -f <base_path>` 子进程。
-     map_saver_cli 订阅 /map 并写出 .pgm + .yaml（约 1–5 秒）。
-  ② 读取 .pgm → 转换成 .png。
-     优先用 Pillow；未安装时使用内置 struct + zlib 手工生成标准 PNG。
-  ③ 向 /part3/mapping/map_status 发布保存结果。
+保存流程（直接写文件，无子进程）：
+  ① map_manager 本身订阅 /map（TRANSIENT_LOCAL，与 slam_toolbox QoS 匹配）。
+     收到后缓存最新的 OccupancyGrid 到 _latest_map。
+  ② 触发保存时：从 _latest_map 直接写 .pgm + .yaml（Python stdlib）。
+  ③ 读取 .pgm → 转换成 .png（Pillow 优先；fallback 用 struct + zlib）。
+  ④ 向 /part3/mapping/map_status 发布保存结果。
+
+  ★ 不再使用 map_saver_cli 子进程 ★
+    原因：子进程需要重新做 DDS 发现（ARM64/Parallels 需 5-15s），
+    --timeout_ms 10000 不足以完成发现 → returncode=255（内部超时）。
+    直接订阅则复用已有的 ROS2 连接，无发现延迟。
 
 接口 (Interfaces)：
-  订阅  /part3/mapping/map_status  std_msgs/String   探索进度（来自 exploration_node）
-  服务  /part3/mapping/save_map    std_srvs/Trigger  手动触发保存
-  发布  /part3/mapping/map_status  std_msgs/String   保存结果反馈
+  订阅  /map                        nav_msgs/OccupancyGrid  SLAM 地图（TRANSIENT_LOCAL）
+  订阅  /part3/mapping/map_status   std_msgs/String         探索进度（来自 exploration_node）
+  服务  /part3/mapping/save_map     std_srvs/Trigger        手动触发保存
+  发布  /part3/mapping/map_status   std_msgs/String         保存结果反馈
 
 参数 (Parameters)：
   save_dir      str   输出目录（默认 ~/auto4508_artifacts/maps）
@@ -43,20 +49,37 @@ map_manager.py — 地图保存管理器 (M4.C4.2)
 
 import os
 import struct
-import subprocess
 import threading
 import zlib
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
+from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+
+
+# /map 话题的 QoS：与 slam_toolbox 发布端保持一致，否则 ROS2 静默不连接。
+# slam_toolbox 用 TRANSIENT_LOCAL（锁存）发布 /map，订阅端必须同样用 TRANSIENT_LOCAL。
+_MAP_QOS = QoSProfile(
+    depth=1,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+)
 
 
 class MapManager(Node):
     """地图保存管理节点 (M4.C4.2)。
 
     设计原则：
+      - 直接订阅 /map，缓存最新 OccupancyGrid，避免子进程 DDS 发现延迟。
       - 与 exploration_node 松耦合 —— 通过共享 topic /part3/mapping/map_status
         感知探索进度，而非直接调用或依赖 exploration_node 的内部状态。
       - 线程安全 —— _save_lock 防止同时触发两次保存（自动 + 手动并发）。
@@ -93,13 +116,29 @@ class MapManager(Node):
         os.makedirs(self._save_dir, exist_ok=True)
 
         # ── 内部状态 ──────────────────────────────────────────────────────────
-        # _saving：标记当前是否有保存进程在运行，配合 _save_lock 防止并发。
+        # _latest_map：缓存最新的 OccupancyGrid（来自 /map 订阅）。
+        #   None = 尚未收到任何地图消息（slam_toolbox 还没发布 /map）。
+        self._latest_map: OccupancyGrid | None = None
+        self._map_lock = threading.Lock()  # 保护 _latest_map 的读写
+
+        # _saving：标记当前是否有保存操作在运行，配合 _save_lock 防止并发。
         self._saving = False
         self._save_lock = threading.Lock()
 
         # _exploration_done：记录是否已为本次探索触发过自动保存。
         # 防止 exploration_node 多次发布 coverage=done 导致重复写盘。
         self._exploration_done = False
+
+        # ── 订阅者：/map（直接缓存 OccupancyGrid）────────────────────────────
+        # 用 TRANSIENT_LOCAL QoS 与 slam_toolbox 发布端匹配。
+        # TRANSIENT_LOCAL（锁存）：即使本节点晚于 slam_toolbox 启动，
+        # 也能收到 slam_toolbox 之前发布的最新地图（订阅即触发回调）。
+        self._map_sub = self.create_subscription(
+            OccupancyGrid,
+            '/map',
+            self._on_map,
+            _MAP_QOS,
+        )
 
         # ── 发布者：保存结果回写到 map_status ─────────────────────────────────
         # 与 exploration_node 共享同一 topic（均用 depth=10 默认 QoS）。
@@ -137,6 +176,24 @@ class MapManager(Node):
             f'save_dir={self._save_dir} | '
             f'map_filename={self._map_filename} | '
             f'auto_save={self._auto_save}'
+        )
+
+    # =========================================================================
+    # 回调：/map 地图缓存
+    # =========================================================================
+
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        """缓存最新的 OccupancyGrid 消息。
+
+        slam_toolbox 每次更新地图后发布此消息（频率较低，约 1-5 Hz）。
+        用锁保证 _save_impl 读取时不会读到半写状态。
+        """
+        with self._map_lock:
+            self._latest_map = msg
+        self.get_logger().debug(
+            f'[MapManager] /map 已更新: '
+            f'{msg.info.width}x{msg.info.height} '
+            f'res={msg.info.resolution:.3f}m/cell'
         )
 
     # =========================================================================
@@ -234,37 +291,46 @@ class MapManager(Node):
         """实际执行保存（仅从 _do_save 调用，已持有 _saving 标志）。
 
         步骤：
-          1. 构建文件路径。
-          2. 调用 map_saver_cli 子进程写 pgm + yaml。
+          1. 检查是否已缓存 /map 消息。
+          2. 从缓存的 OccupancyGrid 直接写 pgm + yaml（无子进程，无 DDS 发现延迟）。
           3. 把 pgm 转换成 png。
           4. 发布结果到 /part3/mapping/map_status。
         """
-        # ── 步骤 1：构建文件路径 ───────────────────────────────────────────────
-        # base_path 不含扩展名；map_saver_cli 会自动加 .pgm / .yaml
+        # ── 步骤 1：检查缓存的地图 ────────────────────────────────────────────
+        with self._map_lock:
+            grid = self._latest_map
+
+        if grid is None:
+            msg = '尚未收到 /map 消息（slam_toolbox 是否已启动并 activate？）'
+            self.get_logger().error(f'[MapManager] {msg}')
+            self._publish_status(f'map_save_failed: {msg}')
+            return False, msg
+
+        # ── 步骤 2：构建文件路径 ───────────────────────────────────────────────
         base_path = os.path.join(self._save_dir, self._map_filename)
         pgm_path  = base_path + '.pgm'
         yaml_path = base_path + '.yaml'
         png_path  = base_path + '.png'
 
-        self.get_logger().info(f'[MapManager] 开始保存地图 → {base_path}.*')
+        self.get_logger().info(
+            f'[MapManager] 开始保存地图 → {base_path}.* '
+            f'({grid.info.width}x{grid.info.height} cells, '
+            f'res={grid.info.resolution:.3f}m/cell)'
+        )
 
-        # ── 步骤 2：map_saver_cli 写出 pgm + yaml ──────────────────────────────
-        ok, err = self._run_map_saver(base_path)
-        if not ok:
-            self.get_logger().error(f'[MapManager] map_saver_cli 失败: {err}')
-            self._publish_status(f'map_save_failed: {err}')
-            return False, f'map_saver_cli 失败: {err}'
-
-        # 校验文件是否真的写出（map_saver_cli 有时返回 0 但未写文件）
-        if not os.path.exists(pgm_path):
-            msg = f'map_saver_cli 返回成功但 {pgm_path} 不存在'
+        # ── 步骤 3：写 pgm + yaml ─────────────────────────────────────────────
+        try:
+            self._write_pgm(grid, pgm_path)
+            self._write_yaml(grid, pgm_path, yaml_path)
+        except Exception as exc:
+            msg = f'地图文件写入失败: {exc}'
             self.get_logger().error(f'[MapManager] {msg}')
             self._publish_status(f'map_save_failed: {msg}')
             return False, msg
 
         self.get_logger().info(f'[MapManager] PGM/YAML 已写出: {pgm_path}')
 
-        # ── 步骤 3：pgm → png ─────────────────────────────────────────────────
+        # ── 步骤 4：pgm → png ─────────────────────────────────────────────────
         # PNG 转换失败不影响主要功能（pgm + yaml 已保存），只记录警告
         png_ok = self._convert_pgm_to_png(pgm_path, png_path)
         if png_ok:
@@ -275,7 +341,7 @@ class MapManager(Node):
                 '安装 python3-pil 可解决 PNG 问题）'
             )
 
-        # ── 步骤 4：发布保存结果 ───────────────────────────────────────────────
+        # ── 步骤 5：发布保存结果 ───────────────────────────────────────────────
         saved_files = (
             f'{pgm_path}, {yaml_path}'
             + (f', {png_path}' if png_ok else '')
@@ -292,52 +358,77 @@ class MapManager(Node):
         return True, result_msg
 
     # =========================================================================
-    # map_saver_cli 子进程
+    # OccupancyGrid → PGM 文件
     # =========================================================================
 
-    def _run_map_saver(self, base_path: str) -> tuple[bool, str]:
-        """调用 nav2_map_server map_saver_cli，将 /map 保存为 pgm + yaml。
+    def _write_pgm(self, grid: OccupancyGrid, pgm_path: str) -> None:
+        """从 OccupancyGrid 直接写出 P5 二进制 PGM 文件。
 
-        map_saver_cli 是一个短命 ROS2 节点：
-          - 订阅 /map，收到第一帧后立即保存并退出
-          - 若 /map 无发布者（slam_toolbox 未 activate），等到超时后退出并报错
+        OccupancyGrid 值域与 PGM 灰度值的对应关系（与 map_saver_cli 一致）：
+          grid.data[i] == -1   → 205  (unknown / 灰色)
+          grid.data[i] == 0    → 254  (free / 白色)
+          grid.data[i] > 0     → 0    (occupied / 黑色，100=满占用)
 
-        参数：
-          -f <base_path>       输出文件基名（cli 自动加 .pgm / .yaml）
-          --timeout_ms 10000   等待 /map 话题的最长毫秒数（10 秒）
-
-        返回 (success: bool, error_message: str)。
+        PGM 坐标原点在左上角，OccupancyGrid 的行列 (row=0) 对应地图原点（左下）。
+        需要垂直翻转（row 从高到低写入），确保 nav2 map_server 加载后方向正确。
         """
-        # 必须 source ROS2 环境，否则子 bash 进程找不到 ros2 命令
-        cmd = (
-            'source /opt/ros/jazzy/setup.bash && '
-            f'ros2 run nav2_map_server map_saver_cli -f "{base_path}" '
-            '--timeout_ms 10000'
+        width  = grid.info.width
+        height = grid.info.height
+        data   = grid.data  # flat list, row-major, origin at bottom-left
+
+        # 预分配像素数组（height×width 字节）
+        pixels = bytearray(width * height)
+        for row in range(height):
+            # PGM 行0 = 图像顶部，OccupancyGrid row0 = 地图底部，需翻转
+            pgm_row = height - 1 - row
+            for col in range(width):
+                val = data[row * width + col]
+                if val == -1:
+                    pixels[pgm_row * width + col] = 205  # unknown
+                elif val == 0:
+                    pixels[pgm_row * width + col] = 254  # free
+                else:
+                    pixels[pgm_row * width + col] = 0    # occupied
+
+        with open(pgm_path, 'wb') as fh:
+            # PGM P5 头部
+            fh.write(f'P5\n{width} {height}\n255\n'.encode('ascii'))
+            fh.write(bytes(pixels))
+
+    def _write_yaml(
+        self,
+        grid: OccupancyGrid,
+        pgm_path: str,
+        yaml_path: str,
+    ) -> None:
+        """写出与 pgm 配套的 nav2 map_server 元数据 YAML 文件。
+
+        格式遵循 nav2 map_server 规范：
+          image       pgm 文件路径（相对路径或绝对路径）
+          mode        trinary（三值：free / occupied / unknown）
+          resolution  米/cell
+          origin      [x, y, yaw]（地图原点在世界坐标系中的位置，yaw=0）
+          negate      0（不反转灰度）
+          occupied_thresh  灰度 < 该值（归一化到 0-1）→ occupied
+          free_thresh      灰度 > 该值（归一化到 0-1）→ free
+        """
+        ox = grid.info.origin.position.x
+        oy = grid.info.origin.position.y
+        res = grid.info.resolution
+
+        # pgm_path 使用绝对路径，map_server 可直接加载，无需相对路径推断
+        content = (
+            f'image: {pgm_path}\n'
+            f'mode: trinary\n'
+            f'resolution: {res}\n'
+            f'origin: [{ox:.6f}, {oy:.6f}, 0.0]\n'
+            f'negate: 0\n'
+            f'occupied_thresh: 0.65\n'
+            f'free_thresh: 0.25\n'
         )
-        self.get_logger().info(f'[MapManager] 执行子进程: {cmd}')
 
-        try:
-            result = subprocess.run(
-                ['bash', '-c', cmd],
-                capture_output=True,   # 捕获 stdout / stderr
-                text=True,             # 解码为 str（UTF-8）
-                timeout=30,            # 整体超时 30 秒（含 bash + ros2 启动）
-            )
-            if result.returncode == 0:
-                return True, ''
-
-            # 失败时优先用 stderr，其次 stdout，最后给通用描述
-            err_text = (result.stderr or result.stdout or '非零返回值').strip()
-            return False, f'returncode={result.returncode}: {err_text}'
-
-        except subprocess.TimeoutExpired:
-            return (
-                False,
-                'map_saver_cli 超时（30s）—— /map 话题可能没有发布者，'
-                '请确认 slam_toolbox 已 configure+activate',
-            )
-        except Exception as exc:
-            return False, f'subprocess 异常: {exc}'
+        with open(yaml_path, 'w', encoding='utf-8') as fh:
+            fh.write(content)
 
     # =========================================================================
     # PGM → PNG 格式转换

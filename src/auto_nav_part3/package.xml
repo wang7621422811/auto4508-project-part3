@@ -23,6 +23,8 @@
   <exec_depend>navigation2</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
+  <!-- M4.C4.2：map_manager 直接订阅 /map（OccupancyGrid）写 pgm/yaml/png，无子进程 -->
+  <exec_depend>nav_msgs</exec_depend>
   <!-- M4.C4.1：TF 查询（map→base_link）供探索节点获取机器人位置 -->
   <exec_depend>tf2_ros</exec_depend>
   <!-- M4.C4.1：numpy 用于 frontier 检测的向量化运算 -->
