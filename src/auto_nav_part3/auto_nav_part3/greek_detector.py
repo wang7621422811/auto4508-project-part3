@@ -50,6 +50,7 @@ Test without robot:
  
 from __future__ import annotations
  
+import math
 import os
 import time
 from datetime import datetime
@@ -100,9 +101,11 @@ class GreekDetectorNode(Node):
         os.makedirs(self._photo_dir, exist_ok=True)
  
         # ── state ─────────────────────────────────────────────────────────
-        self._bridge             = CvBridge()
-        self._robot_x: float     = 0.0
-        self._robot_y: float     = 0.0
+        self._bridge              = CvBridge()
+        self._robot_x: float      = 0.0
+        self._robot_y: float      = 0.0
+        self._robot_yaw: float    = 0.0
+        self._depth_image         = None
         self._last_detected: dict[str, float] = {}
         self._model              = None
         self._model_loaded       = False
@@ -110,6 +113,8 @@ class GreekDetectorNode(Node):
         # ── subscribers ───────────────────────────────────────────────────
         self.create_subscription(
             Image, "/oak/rgb/image_raw", self._on_image, 10)
+        self.create_subscription(
+            Image, "/oak/stereo/depth", self._on_depth, 10)
         self.create_subscription(
             Odometry, "/odom", self._on_odom, 10)
  
@@ -126,7 +131,19 @@ class GreekDetectorNode(Node):
     def _on_odom(self, msg: Odometry) -> None:
         self._robot_x = msg.pose.pose.position.x
         self._robot_y = msg.pose.pose.position.y
- 
+        q = msg.pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self._robot_yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    def _on_depth(self, msg: Image) -> None:
+        try:
+            self._depth_image = self._bridge.imgmsg_to_cv2(
+                msg, desired_encoding="passthrough")
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Depth error: {exc}", throttle_duration_sec=5.0)
+
     def _on_image(self, msg: Image) -> None:
         # Load model on first frame
         if not self._model_loaded:
@@ -201,12 +218,17 @@ class GreekDetectorNode(Node):
         ink_path = os.path.join(self._photo_dir, f"ink_{label}_{ts}.jpg")
         cv2.imwrite(ink_path, ink_vis)
 
-        img_path = self._save_photo(bgr, paper, label)
-        self._publish(label, confidence, img_path)
- 
+        cx_f          = float(bgr.shape[1] / 2)
+        cy_f          = float(bgr.shape[0] / 2)
+        range_m       = self._estimate_range(cx_f, cy_f)
+        obj_x, obj_y  = self._calc_object_position(cx_f, range_m)
+        img_path      = self._save_photo(bgr, paper, label)
+        self._publish(label, confidence, img_path, range_m, obj_x, obj_y)
+
+        range_str = f"{range_m:.2f}m" if math.isfinite(range_m) else "no depth"
         self.get_logger().info(
             f"[GREEK] {label} | conf={confidence:.2f} | "
-            f"robot=({self._robot_x:.2f},{self._robot_y:.2f})"
+            f"range={range_str} | obj=({obj_x:.2f},{obj_y:.2f})"
         )
  
     @staticmethod
@@ -346,8 +368,42 @@ class GreekDetectorNode(Node):
         cv2.imwrite(path, annotated,
                     [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_q])
         return path
+    
+    def _estimate_range(self, cx: float, cy: float) -> float:
+        """Sample depth at (cx,cy) — returns metres or nan."""
+        if self._depth_image is None:
+            return float("nan")
+        h, w = self._depth_image.shape[:2]
+        r  = 5
+        x0 = max(0, int(cx) - r)
+        x1 = min(w, int(cx) + r + 1)
+        y0 = max(0, int(cy) - r)
+        y1 = min(h, int(cy) + r + 1)
+        roi = self._depth_image[y0:y1, x0:x1].astype(np.float32)
+        roi = roi[np.isfinite(roi) & (roi > 0.01)]
+        if roi.size == 0:
+            return float("nan")
+        val = float(np.median(roi))
+        return val / 1000.0 if val > 20 else val
+
+    def _calc_object_position(self, cx_px: float, range_m: float) -> tuple[float, float]:
+        """Calculate object world coordinates from robot pose + depth + bearing."""
+        if not math.isfinite(range_m):
+            return self._robot_x, self._robot_y
+        hfov_rad = math.radians(69.0)
+        bearing  = -((cx_px / 640.0) - 0.5) * hfov_rad
+        heading  = self._robot_yaw + bearing
+        obj_x    = self._robot_x + range_m * math.cos(heading)
+        obj_y    = self._robot_y + range_m * math.sin(heading)
+        return obj_x, obj_y
  
-    def _publish(self, label: str, confidence: float, img_path: str) -> None:
+    def _publish(self, label: str, confidence: float,
+                 img_path: str, range_m: float = float("nan"),
+                 obj_x: float = float("nan"),
+                 obj_y: float = float("nan")) -> None:
+        range_str = f"{range_m:.3f}" if math.isfinite(range_m) else "nan"
+        ox_str    = f"{obj_x:.4f}"   if math.isfinite(obj_x)   else "nan"
+        oy_str    = f"{obj_y:.4f}"   if math.isfinite(obj_y)   else "nan"
         payload = (
             f"type=greek "
             f"label={label} "
@@ -355,7 +411,9 @@ class GreekDetectorNode(Node):
             f"y={self._robot_y:.4f} "
             f"confidence={confidence:.3f} "
             f"image={img_path} "
-            f"range_m=nan"
+            f"range_m={range_str} "
+            f"obj_x={ox_str} "
+            f"obj_y={oy_str}"
         )
         self._pub.publish(String(data=payload))
         self._last_detected[label] = time.monotonic()
