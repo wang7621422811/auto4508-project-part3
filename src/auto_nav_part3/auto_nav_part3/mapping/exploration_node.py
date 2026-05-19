@@ -136,7 +136,7 @@ class ExplorationNode(Node):
         # 立刻重选完全相同的点，不阻止机器人向角落逐格推进。 //TODO 真实robot需不需要更换在做检查
         # 诊断显示 0.15m 半径使 8/15 clusters 被过滤（步长 ≈ 0.15m 时恰好等于半径）。
         self._visited: list[tuple[float, float]] = []
-        _VISITED_RADIUS = 0.05  # = 地图分辨率 1 格，防立刻重选但不阻断逐步推进
+        _VISITED_RADIUS = 0.10  # 2格，防快速重选相邻点但允许 > 0.1m 的角落步进
         self._visited_radius: float = _VISITED_RADIUS
 
         # home 是否已初始化（第一次从 TF 获取）

@@ -334,6 +334,349 @@ ros2 topic echo /part3/system/state        # MAPPING
 ros2 topic echo /part3/mapping/map_status  # coverage 递增
 ```
 
+### M5 启动顺序
+
+```
+ t=0 s   gz server + robot_state_publisher + bridge
+ t=3 s   ekf_node（odom→base_link TF）
+ t=10 s  slam_toolbox（unconfigured）
+ t=10.5s slam configure → activate（/map + map→odom TF 开始发布）
+ t=15 s  nav2_bringup（use_nav2:=true）
+ t=45 s  exploration_node + map_manager（use_exploration:=true）
+            exploration_node 启动时 _active=false，等待激活信号
+
+ 随时    mapping_service（独立节点，随 sim_bringup 一同启动或单独启动）
+
+ 用户/UI → ros2 service call /part3/mapping/start ...
+         → mapping_service 立即发 enable=true → exploration_node 开始探索
+```
+
+### M5 通信图
+
+```
+  UI / CLI
+     │
+     │  /part3/mapping/start (Trigger)
+     ▼
+┌──────────────────────┐
+│   mapping_service    │──── /part3/system/state = "MAPPING" ──► 状态订阅者
+│   (编排，无逻辑)     │
+└──────────┬───────────┘
+           │ /part3/exploration/enable = true
+           ▼
+┌──────────────────────┐     /navigate_to_pose (Action)
+│   exploration_node   │ ──────────────────────────────► Nav2
+│   (frontier 探索)    │
+└──────────┬───────────┘
+           │ /part3/mapping/map_status
+           │  "coverage=68% frontiers=3 area=15x15"
+           │  ...
+           │  "coverage=done coverage_pct=97%"
+           │
+     ┌─────┴──────────────────────────────────────┐
+     ▼                                            ▼
+┌──────────────────────┐              ┌──────────────────────┐
+│   mapping_service    │              │    map_manager       │
+│   检测 coverage=done │              │  检测 coverage=done  │
+│   → state=COMPLETE   │              │  → 自动保存地图文件  │
+└──────────────────────┘              │  (.pgm / .yaml / .png│
+                                      └──────────────────────┘
+```
+
+**数据流说明**：
+- `mapping_service` 只做开关：收到 start → `enable=true`，检测到 done → `enable=false` + `COMPLETE`
+- `exploration_node` 执行真正的 frontier 算法，进度发布到 `/part3/mapping/map_status`
+- `map_manager` 独立监听 `map_status`，自动保存，无需 `mapping_service` 显式调用
+- 三节点松耦合，任何一个可单独重启而不影响其他
+
+---
+
+## M_P 感知集成 (Perception Integration — T3/T4)
+
+> 队友负责模型代码，你负责把他的节点集成进 launch，并统一接口格式供 T8 路点服务消费。
+
+### C_P.1 — perception_adapter 接口适配节点
+
+**1. 功能**：把队友感知节点的输出统一成 `/part3/perception/marker_event` 格式，并在内存里维护一份 marker 列表供 T8 查询。
+
+**2. 为什么要有他**：
+- 队友发布的格式可能与 TOPICS.md 约定不完全一致（消息类型、坐标系、字段名）。
+- T8 需要按 marker 坐标规划路径，需要一个可靠的"已知 marker 列表"服务。
+- 适配节点做格式转换，队友代码和路点服务互不依赖对方内部实现。
+
+**3. 接口 / 参数定义**：
+- **新建**：`src/auto_nav_part3/auto_nav_part3/perception/perception_adapter.py`
+- 输入（来自队友节点，按实际确认后填写）：
+  - 队友发布话题（待确认后替换）→ 转换为统一格式
+- 输出（标准接口，写进 `TOPICS.md`）：
+  - `/part3/perception/marker_event`（`std_msgs/String`，保留兼容）
+  - `/part3/perception/markers`（`geometry_msgs/PoseArray`，新增，供 T8 直接读取）
+- 服务（新增，写进 `TOPICS.md`）：
+  - `/part3/perception/get_markers`（`std_srvs/Trigger`）→ 通过 `/part3/perception/markers` 话题回应最新 marker 列表
+- marker 事件字符串格式约定：
+  ```
+  type=greek_letter label=alpha x=3.2 y=-1.5 confidence=0.92
+  type=colour_obstacle colour=yellow x=1.0 y=4.5
+  ```
+- 参数（`config/perception.yaml`）：
+  - `map_frame: map`（所有坐标必须转换到 map 帧后存储）
+
+**4. 逻辑与交互**：
+1. 启动时订阅队友节点的输出话题
+2. 收到检测结果 → 查询 TF 把像素/相机坐标转为 map 帧 (x, y)
+3. 去重：若新 marker 与已有 marker 距离 < 0.5m，视为同一目标，更新 confidence
+4. 发布到 `/part3/perception/marker_event`（字符串，兼容现有订阅者）
+5. 同时维护 `_markers` 列表（`{type, label, x, y}`），发布到 `/part3/perception/markers`
+6. T8 的 `waypoint_service` 启动前读取此列表选出希腊字母 waypoint
+
+**5. 集成步骤**：
+```bash
+# 1. 把队友代码拷贝进 src/auto_nav_part3/auto_nav_part3/perception/
+# 2. 在 setup.py console_scripts 注册队友节点和 perception_adapter
+# 3. sim_bringup.launch.py 添加两个节点
+# 4. 确认 /part3/perception/markers 有输出
+ros2 topic echo /part3/perception/markers
+ros2 topic echo /part3/perception/marker_event
+```
+
+**6. 自检**：
+```bash
+# 仿真中机器人经过一个 marker → adapter 在 30s 内发布该 marker 的 map 坐标
+# 同一 marker 多次检测 → 列表里只有 1 条记录（去重成功）
+ros2 topic echo /part3/perception/marker_event
+```
+
+---
+
+## M_S 安全与记录 (Safety, Estop & Recording — T5/T6/T9)
+
+### C_S.1 — safety_monitor 升级：移动障碍急停（T5）
+
+**1. 功能**：检测向机器人接近的移动障碍物，在其进入 1m 范围时触发软件急停（发零速），并发布急停事件。
+
+**2. 为什么要有他**：
+- PDF Task 5 明确要求"moving object comes within 1m → software estop"。
+- Nav2 已处理静态障碍，safety_monitor 专门补充移动障碍这一层。
+- 现有 `safety_monitor.py` 是占位代码：对静态障碍也误触发、无冷却、无移动检测。
+
+**3. 接口 / 参数定义**：
+- 修改：`src/auto_nav_part3/auto_nav_part3/safety/safety_monitor.py`
+- 输入：`/scan`（`sensor_msgs/LaserScan`）
+- 输出：
+  - `/cmd_vel`（`geometry_msgs/Twist`，零速覆盖）—— 急停时发布
+  - `/part3/safety/estop_event`（`std_msgs/String`）—— 事件记录
+- 参数（`config/safety.yaml`，新建）：
+  - `estop_distance_m: 1.0`（急停触发距离）
+  - `moving_delta_m: 0.15`（相邻帧变化超过此值视为移动）
+  - `consecutive_frames: 3`（需连续 N 帧确认，防误报）
+  - `estop_cooldown_sec: 2.0`（急停后冷却时间，防止连续触发录包）
+  - `publish_rate_hz: 10.0`（急停期间持续发零速频率）
+
+**4. 逻辑与交互（移动检测算法）**：
+```
+每帧 /scan 到达时：
+  1. 对每个 angle i：
+       delta[i] = prev_range[i] - curr_range[i]   # 正值 = 距离缩短 = 靠近
+  2. moving_close = {i : delta[i] > moving_delta_m AND curr_range[i] < estop_distance_m}
+  3. 若 moving_close 非空：
+       confirm_count += 1
+     否则：
+       confirm_count = 0（重置）
+  4. 若 confirm_count >= consecutive_frames AND 冷却已过：
+       发布零速 /cmd_vel（定时器持续发，直到障碍消失）
+       发布 estop_event（含时间戳、最近距离、方位角）
+       重置冷却计时
+  5. 更新 prev_ranges = curr_ranges
+```
+
+急停事件格式：
+```
+software_estop timestamp=1234567890.123 min_dist=0.72 bearing_deg=45 save_last_5s=true
+```
+
+**5. twist_mux 仲裁**：
+- 急停零速必须高于 Nav2 的 `/cmd_vel` 优先级
+- 方案：`safety_monitor` 发布到 `/cmd_vel_safety`，`nav2` 发布到 `/cmd_vel_nav`，`twist_mux` 合并输出 `/cmd_vel`（优先级 safety > nav2 > teleop）
+- `config/twist_mux.yaml` 配置三路优先级
+
+**6. 自检**：
+```bash
+# 手动推障碍到 1m 内（仿真：生成一个动态 actor 或 teleop 另一个机器人）
+ros2 topic echo /part3/safety/estop_event
+ros2 topic echo /cmd_vel  # 应出现全零 Twist
+```
+
+---
+
+### C_S.2 — rolling_recorder：5 秒滚动录包（T6）
+
+**1. 功能**：始终在内存中保留最近 5 秒的传感器和系统数据；收到急停事件时立即把这 5 秒数据写到磁盘。
+
+**2. 为什么要有他**：PDF Task 6 要求"save the last 5 seconds of recorded data"供团队事后回看——事故回放必须在急停触发 **之前** 就开始缓存。
+
+**3. 接口 / 参数定义**：
+- **新建**：`src/auto_nav_part3/auto_nav_part3/safety/rolling_recorder.py`
+- 订阅（缓存）：`/scan`、`/camera`、`/odometry/filtered`、`/tf`、`/part3/system/state`、`/part3/safety/estop_event`
+- 触发：订阅 `/part3/safety/estop_event`，收到后写盘
+- 输出：`artifacts/bags/estop_<timestamp>.bag3/`（rosbags 格式）
+- 参数（`config/safety.yaml` 追加）：
+  - `buffer_duration_sec: 5.0`（滚动窗口大小）
+  - `bag_save_dir: artifacts/bags/`
+
+**4. 逻辑与交互**：
+```
+初始化：
+  _buffer = deque()  # 元素: (topic, msg, timestamp)
+  订阅以上话题，每条消息 append 到 _buffer
+  定时器：每 0.1s 清理 _buffer 中早于 (now - 5s) 的条目
+
+收到 estop_event：
+  snapshot = list(_buffer)  # 拷贝当前 5s 窗口
+  在线程中写入 rosbags Writer → artifacts/bags/estop_<ts>/
+  日志：'[RollingRecorder] 已保存 estop bag: ...'
+```
+
+实现方式（推荐 rosbags Python 库）：
+```bash
+pip install rosbags   # 或 apt install python3-rosbags
+```
+
+**5. 自检**：
+```bash
+# 触发急停后：
+ls artifacts/bags/estop_*/
+ros2 bag info artifacts/bags/estop_<timestamp>/
+# 应看到 /scan, /camera 等话题，duration ≈ 5s
+```
+
+---
+
+### C_S.3 — 全程录包集成（T9）
+
+**1. 功能**：机器人运行期间全程录包，供离线回放、答辩演示、报告截图使用。
+
+**2. 为什么要有他**：PDF Task 9 要求"record the drives so it can be reviewed again offline"。
+
+**3. 接口 / 参数定义**：
+- 不新建节点，在 `sim_bringup.launch.py` 中加一个 `ExecuteProcess` 启动 `ros2 bag record`
+- 录制话题（关键，不录全部避免磁盘爆满）：
+  ```
+  /map /scan /camera /odometry/filtered /tf /tf_static
+  /cmd_vel /part3/system/state /part3/mapping/map_status
+  /part3/safety/estop_event /part3/perception/marker_event
+  /navigate_to_pose/_action/status
+  ```
+- 输出：`artifacts/bags/session_<launch_time>/`
+- Launch 参数：`record_bag:=true/false`（默认 true）
+
+**4. 逻辑与交互**：
+```python
+# sim_bringup.launch.py 追加：
+bag_recorder = ExecuteProcess(
+    condition=IfCondition(record_bag),
+    cmd=['ros2', 'bag', 'record',
+         '-o', f'artifacts/bags/session_{timestamp}',
+         '/map', '/scan', '/camera', ...],
+    output='screen',
+)
+```
+录包进程与 launch 生命周期绑定，launch 停止时录包自动结束。
+
+**5. 自检**：
+```bash
+ls artifacts/bags/session_*/
+ros2 bag info artifacts/bags/session_<ts>/
+ros2 bag play artifacts/bags/session_<ts>/   # RViz 内回放验证
+```
+
+---
+
+## M_W 路点快速驾驶 (Waypoint Service — T8)
+
+### C_W.1 — waypoint_service 实装：最快路径规划 + Nav2 顺序导航
+
+**1. 功能**：
+- 第一趟探索完成后，接收 3 个目标坐标（来自 Member 2 的 marker 检测）
+- 用暴力枚举 TSP 找最短访问顺序（3个点只有 6 种排列，毫秒级）
+- 调用 Nav2 `NavigateThroughPoses` 按最优顺序到达 3 点后返回 home
+- 全程发布规划路径供 UI 显示
+
+**2. 为什么要有他**：PDF Task 8 核心分数：第二趟在已知地图上尽可能快地访问 3 个 waypoint 并回家。`waypoint_service.py` 目前是占位符，需要接真实逻辑。
+
+**3. 接口 / 参数定义**：
+- 修改：`src/auto_nav_part3/auto_nav_part3/navigation/waypoint_service.py`
+- 触发服务：`/part3/waypoint/start`（`std_srvs/Trigger`）—— 已存在，保留签名
+- Waypoint 来源：在调用 start 前，由 Member 2 节点通过以下方式提供（按约定选一）：
+  - **方案 A**（推荐）：从 `/part3/perception/markers` 话题读取，过滤 type=greek_letter 的条目
+  - **方案 B**：通过 ros2 param set 在调用前设置 waypoints 参数
+- 输出：
+  - `/part3/waypoint/plan`（`std_msgs/String`）—— 发布排序后的路径描述
+  - `/part3/system/state`（`std_msgs/String`）—— `WAYPOINT_DRIVE` / `COMPLETE`
+- Action 客户端：`/navigate_through_poses`（`nav2_msgs/action/NavigateThroughPoses`）
+- 参数（`config/waypoint.yaml`，新建）：
+  - `home_x: -3.0`，`home_y: 0.0`（出发/返回原点，与 spawn 一致）
+  - `nav_timeout_sec: 120.0`（单次导航超时）
+
+**4. 逻辑与交互**：
+```
+收到 /part3/waypoint/start：
+  1. 从 /part3/perception/markers 读取所有 type=greek_letter 的 marker
+     （最多等待 3s；若无 marker，返回 success=False）
+  2. 暴力枚举 3 个 marker 的所有 6 种访问顺序
+     对每种顺序计算总路程 = Σ euclidean(home→p1→p2→p3→home)
+     选路程最短的顺序 → best_order
+  3. 发布 /part3/waypoint/plan（格式：home→α(3.2,-1.5)→β(1.0,4.5)→γ(-2.0,2.3)→home  dist=18.4m）
+  4. 发布 state = WAYPOINT_DRIVE
+  5. 构建 PoseStamped 列表：[best_order[0], best_order[1], best_order[2], home]
+  6. 调用 /navigate_through_poses action（异步）
+  7. 等待结果（回调）：
+     成功 → state = COMPLETE，日志"已返回 home"
+     失败 → state = WAYPOINT_FAILED，日志含错误
+  8. 立即返回 response.success=True（"命令已接受"，导航异步进行）
+```
+
+TSP 暴力枚举（3点 = 6种排列）：
+```python
+from itertools import permutations
+import math
+
+def best_order(home, markers):
+    # markers: [(x,y), (x,y), (x,y)]
+    def dist(a, b): return math.hypot(a[0]-b[0], a[1]-b[1])
+    def total(order):
+        pts = [home] + list(order) + [home]
+        return sum(dist(pts[i], pts[i+1]) for i in range(len(pts)-1))
+    return min(permutations(markers), key=total)
+```
+
+**5. 通信图**：
+```
+Member 2 节点
+  └─► /part3/perception/markers (PoseArray)
+          │
+          ▼
+  waypoint_service (收到 /part3/waypoint/start)
+  ├─► 读取 markers → TSP 排序 → /part3/waypoint/plan
+  ├─► /part3/system/state = "WAYPOINT_DRIVE"
+  └─► /navigate_through_poses (Action) ──► Nav2
+                                              └─► /cmd_vel ──► 机器人
+```
+
+**6. 自检**：
+```bash
+# 手动发 3 个 marker（模拟 Member 2 输出）：
+ros2 topic pub --once /part3/perception/markers geometry_msgs/msg/PoseArray \
+  '{poses: [{position: {x: 3.0, y: 1.0}}, {position: {x: -2.0, y: 3.0}}, {position: {x: 1.5, y: -2.5}}]}'
+
+# 触发第二趟：
+ros2 service call /part3/waypoint/start std_srvs/srv/Trigger {}
+
+# 观察：
+ros2 topic echo /part3/waypoint/plan    # 输出最短路径顺序
+ros2 topic echo /part3/system/state     # WAYPOINT_DRIVE → COMPLETE
+# RViz 里看机器人按顺序到达 3 个点后回到 home
+```
+
 ---
 
 ## M6 物理机器人部署 (Physical Bringup)

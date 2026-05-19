@@ -45,12 +45,13 @@ exploration_node:
     # 避免 arena 边缘的 frontier 质心因浮点对齐恰好被过滤。
     search_area_size: 17.0
 
-    # ── Frontier 过滤 //TODO────────────────────────────────────────────────────────────────
+    # ── Frontier 过滤 ────────────────────────────────────────────────────────────────────
     # frontier 聚类最小格子数（cell）。
-    # 地图分辨率 0.05m，3 cells ≈ 0.15m 宽的 frontier。
-    # 诊断显示：54/62 clusters 因 < 10 被过滤（LiDAR 远距扫描把大片区域标成 free，
-    # 剩余 unknown 区域破碎成许多小 cluster）。降到 3 让这些小 cluster 也能被探索。
-    min_frontier_size: 3
+    # 地图分辨率 0.05m，7 cells ≈ 0.35m 宽的 frontier。
+    # 权衡：3 太小（追噪声 cluster → 机器人快速微移 → SLAM 漂移崩溃）
+    #        10 太大（角落小 cluster 被过滤 → 提前停止在 73%）
+    #        7 过滤单格噪声，保留真实角落 frontier，避免 SLAM 漂移。
+    min_frontier_size: 7
 
     # ── 覆盖率目标 ────────────────────────────────────────────────────────────
     # 探索区域内 free/(free+unknown) ≥ 此值时停止。

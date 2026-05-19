@@ -490,6 +490,17 @@ def generate_launch_description():
         args=[spawn_x, spawn_y, spawn_z],
     )
 
+    # ── M5. mapping_service（M5.C5.1）─────────────────────────────────────────
+    # 编排节点：提供 /part3/mapping/start 服务，激活/停止 exploration_node。
+    # 随仿真启动即可注册服务，等 UI 或命令行调用时再触发探索。
+    mapping_service_node = Node(
+        package='auto_nav_part3',
+        executable='mapping_service',
+        name='part3_mapping_service',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
     # ── 7. RViz2 (optional) ─────────────────────────────────────────────────
     rviz2 = Node(
         condition=IfCondition(use_rviz),
@@ -515,7 +526,8 @@ def generate_launch_description():
         slam_node,              # 7.  SLAM 节点（10s 后，unconfigured 状态）
         slam_lifecycle,         # 7a. configure+activate 重试循环（10.5s 后开始）
         nav2_node,              # M3. Nav2 导航栈（15s 后，use_nav2:=true 时启用）
-        exploration_node,       # M4. Frontier 探索（20s 后，use_exploration:=true 时启用）
-        map_manager_node,       # M4. 地图保存管理器（20s 后，随 exploration 一起启动）
+        exploration_node,       # M4. Frontier 探索（45s 后，use_exploration:=true 时启用）
+        map_manager_node,       # M4. 地图保存管理器（45s 后，随 exploration 一起启动）
+        mapping_service_node,   # M5. 编排服务，提供 /part3/mapping/start
         rviz2,                  # 8.  可视化
     ])
