@@ -1,0 +1,33 @@
+# C_S.1 — twist_mux 速度指令仲裁配置
+#
+# 优先级链（高数值 = 优先）：
+#   safety_monitor（/cmd_vel_safety, priority=100）
+#     → nav2 collision_monitor（/cmd_vel_nav2, priority=10）
+#     → teleop（/cmd_vel_teleop, priority=5）
+#
+# timeout：超过此时间无新消息则认为该源不活跃，降级到下一优先级
+# 输出话题：twist_mux 节点在 sim_bringup 中 remap cmd_vel_out → /cmd_vel
+#           /cmd_vel 经 ros_gz_bridge 桥接到 Gazebo diff-drive 插件
+
+twist_mux:
+  ros__parameters:
+    # Nav2 collision_monitor 默认 enable_stamped_cmd_vel=false，发布 geometry_msgs/Twist（非 TwistStamped）。
+    # twist_mux 4.5.0 (Jazzy) 默认 use_stamped=true，会订阅 TwistStamped → 类型不匹配，消息收不到。
+    # 必须显式设为 false，与 Nav2 保持一致。
+    use_stamped: false
+    topics:
+      # 急停零速 — 最高优先级，阻断 Nav2 控制
+      safety:
+        topic   : /cmd_vel_safety
+        timeout : 0.5
+        priority: 100
+      # Nav2 collision_monitor 输出（在 nav2_params.yaml 中已改名）
+      navigation:
+        topic   : /cmd_vel_nav2
+        timeout : 0.5
+        priority: 10
+      # 键盘遥控（teleop_twist_keyboard / teleop_keyboard 节点）
+      teleop:
+        topic   : /cmd_vel_teleop
+        timeout : 0.5
+        priority: 5

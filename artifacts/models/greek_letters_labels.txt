@@ -1,0 +1,10 @@
+alpha
+beta
+delta
+eta
+gamma
+lambda
+mu
+psi
+rho
+tau

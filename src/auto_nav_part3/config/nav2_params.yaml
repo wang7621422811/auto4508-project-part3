@@ -368,7 +368,8 @@ collision_monitor:
     base_frame_id: "base_link"          # Pioneer 3-AT 本体帧（非 base_footprint）
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
-    cmd_vel_out_topic: "cmd_vel"
+    # C_S.1: 改名 cmd_vel → cmd_vel_nav2，由 twist_mux 统一仲裁后输出 /cmd_vel
+    cmd_vel_out_topic: "cmd_vel_nav2"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2
     source_timeout: 1.0

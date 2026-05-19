@@ -59,6 +59,7 @@ setup(
             'ui_status         = auto_nav_part3.system.ui_status:main',
             # --- safety/ ---
             'safety_monitor    = auto_nav_part3.safety.safety_monitor:main',
+            'rolling_recorder  = auto_nav_part3.safety.rolling_recorder:main',
             'teleop_keyboard   = auto_nav_part3.safety.teleop_keyboard:main',
             # --- top-level ---
             'camera_info_publisher = auto_nav_part3.camera_info_publisher:main',

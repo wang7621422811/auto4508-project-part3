@@ -56,9 +56,17 @@ Launch arguments
   use_slam      true/false   Run slam_toolbox mapping   (default: true)
   use_nav2      true/false   Run Nav2 navigation stack  (default: false)
   use_exploration true/false Run frontier exploration   (default: false)
+  use_camera    true/false   Launch perception nodes    (default: false)
+  use_safety    true/false   Run safety_monitor + twist_mux (default: true)
+  use_recording true/false   Full-session rosbag2 recording (C_S.3/T9)  (default: false)
   world         path         Override world SDF file
   x/y/z         float        Spawn position             (default: -3.0 0 0.18)
   gz_verbose    0-4          Gz server verbosity        (default: 3)
+
+
+./scripts/launch.sh start --clean sim_bringup use_nav2:=true use_exploration:=true \
+      use_slam:=true use_rviz:=true use_safety:=true
+
 """
 
 import os
@@ -143,6 +151,8 @@ def generate_launch_description():
     slam_config_path = os.path.join(pkg, 'config', 'slam_toolbox.yaml')
     # Nav2 launch 文件路径（M3.C3.1）
     nav2_launch_path = os.path.join(pkg, 'launch', 'nav2_bringup.launch.py')
+    # 感知子系统 launch 文件路径（Member 2: colour_detector / greek_detector / photo_logger）
+    camera_bringup_launch_path = os.path.join(pkg, 'launch', 'camera_bringup.launch.py')
 
     # robot_description: same pattern as part3_minimal.launch.py (Command + cat)
     # so that FindPackageShare resolves at runtime, not import time.
@@ -186,6 +196,22 @@ def generate_launch_description():
             'use_exploration', default_value='false',
             description='Launch frontier exploration node (M4). Requires use_nav2=true.',
         ),
+        DeclareLaunchArgument(
+            'use_camera', default_value='false',
+            description='Launch perception nodes (colour_detector / greek_detector / photo_logger). '
+                        'Requires /camera image bridge (auto-started at t=2s).',
+        ),
+        DeclareLaunchArgument(
+            'use_safety', default_value='true',
+            description='Launch safety_monitor (moving-obstacle estop) + twist_mux (C_S.1). '
+                        'twist_mux arbitrates /cmd_vel_safety (priority=100) vs /cmd_vel_nav2 (10).',
+        ),
+        DeclareLaunchArgument(
+            'use_recording', default_value='false',
+            description='C_S.3 (T9)：全程 rosbag2 录包，保存到 artifacts/bags/session_<timestamp>/。'
+                        '录制关键话题（/scan /odometry/filtered /tf /tf_static /cmd_vel /map 等），'
+                        '不录 /camera（体积过大）。',
+        ),
     ]
 
     use_gz_gui    = LaunchConfiguration('use_gz_gui')
@@ -193,6 +219,9 @@ def generate_launch_description():
     use_slam      = LaunchConfiguration('use_slam')
     use_nav2      = LaunchConfiguration('use_nav2')
     use_exploration = LaunchConfiguration('use_exploration')
+    use_camera    = LaunchConfiguration('use_camera')
+    use_safety    = LaunchConfiguration('use_safety')
+    use_recording = LaunchConfiguration('use_recording')
     world      = LaunchConfiguration('world')
     spawn_x    = LaunchConfiguration('x')
     spawn_y    = LaunchConfiguration('y')
@@ -481,6 +510,29 @@ def generate_launch_description():
         ],
     )
 
+    # ── M_P. 感知子系统（Member 2，可选）─────────────────────────────────────
+    # colour_detector + greek_detector + photo_logger，由 camera_bringup.launch.py 统一管理。
+    #
+    # 延迟 5s 启动原因：
+    #   /camera 话题由 ros_gz_bridge（2s）从 Gazebo 桥接进来，
+    #   再经过 Pioneer 的相机插件初始化约需 1-2s 才能稳定出帧。
+    #   5s = 2s(bridge) + 3s(相机流稳定余量)，确保节点订阅后立即有图像可处理。
+    #
+    # 路径/模型参数已在 camera_bringup.launch.py 内部固定（artifacts/photos、
+    # artifacts/models/greek_letters.onnx），此处只透传 detection_cooldown。
+    camera_node = TimerAction(
+        condition=IfCondition(use_camera),
+        period=5.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(camera_bringup_launch_path),
+                launch_arguments={
+                    'detection_cooldown': '5.0',   # 同一标签重检测冷却，单位秒
+                }.items(),
+            ),
+        ],
+    )
+
     # ── 5. Spawn robot — OpaqueFunction pre-processes URDF at launch time ────
     #   Replaces package://auto_nav_part3 → file:///absolute/path so that
     #   gz-common5-graphics can load .dae meshes without ROS package resolution.
@@ -488,6 +540,84 @@ def generate_launch_description():
     spawn_robot = OpaqueFunction(
         function=_make_spawn_action,
         args=[spawn_x, spawn_y, spawn_z],
+    )
+
+    # ── C_S.1. twist_mux — 速度指令仲裁器（始终启动）──────────────────────────
+    # Nav2 collision_monitor 现在输出 /cmd_vel_nav2（非 /cmd_vel），必须经 twist_mux
+    # 合并后输出 /cmd_vel，Gazebo bridge 才能收到。因此 twist_mux 无条件启动，
+    # 不与 use_safety 绑定；safety_monitor 才是可选的。
+    #
+    # 优先级：safety_monitor /cmd_vel_safety (100) > nav2 /cmd_vel_nav2 (10) > teleop (5)
+    # ⚠️  teleop_twist_keyboard 默认发 /cmd_vel；若需要遥控功能，应 remap 到 /cmd_vel_teleop。
+    twist_mux_config_path = os.path.join(pkg, 'config', 'twist_mux.yaml')
+    twist_mux_node = Node(
+        package='twist_mux',
+        executable='twist_mux',
+        name='twist_mux',
+        output='screen',
+        parameters=[twist_mux_config_path, {'use_sim_time': True}],
+        # twist_mux 默认发布 cmd_vel_out，remap 到 /cmd_vel（ros_gz_bridge 桥接的话题）
+        remappings=[('cmd_vel_out', '/cmd_vel')],
+    )
+
+    # ── C_S.1. safety_monitor — 移动障碍检测 + 软件急停（可选）──────────────
+    # 检测到靠近障碍后向 /cmd_vel_safety（priority=100）持续发零速，
+    # twist_mux 自动覆盖 Nav2 的 cmd_vel 输出。
+    # Nav2 goal 不被取消 → 障碍消失后探索/导航自动恢复，无需人工干预。
+    safety_config_path = os.path.join(pkg, 'config', 'safety.yaml')
+    safety_monitor_node = Node(
+        condition=IfCondition(use_safety),
+        package='auto_nav_part3',
+        executable='safety_monitor',
+        name='part3_safety_monitor',
+        output='screen',
+        parameters=[safety_config_path, {'use_sim_time': True}],
+    )
+
+    # ── C_S.2. rolling_recorder — 5 秒滚动录包（C_S.1 的伴生节点）──────────
+    # 始终在内存中保留最近 5 秒的传感器数据。
+    # 收到 /part3/safety/estop_event（由 safety_monitor 发布）时，
+    # 立即把快照写成 rosbag2 文件到 artifacts/bags/estop_<ts>/，供离线回放。
+    # use_safety 为 false 时无 estop_event，录包永远不会触发，故与 safety 同条件。
+    rolling_recorder_node = Node(
+        condition=IfCondition(use_safety),
+        package='auto_nav_part3',
+        executable='rolling_recorder',
+        name='part3_rolling_recorder',
+        output='screen',
+        parameters=[safety_config_path, {'use_sim_time': True}],
+    )
+
+    # ── C_S.3. session_recorder — 全程录包（T9）──────────────────────────────
+    # 对比 C_S.2（5s 滚动缓冲，急停时写盘），本节点记录完整会话。
+    # 使用 ros2 bag record 进程；延迟 5s 等待 ros_gz_bridge（2s）+ 机器人生成（4s）就绪，
+    # 确保桥接话题（/scan /odom /imu）已开始发布再开始录制。
+    # 保存路径：artifacts/bags/session_<unix_timestamp>/（相对于 ros2 launch 工作目录）
+    # /camera 已注释：单帧 640×480 RGB ≈ 1 MB，全程录制体积过大；需要时取消下方注释。
+    session_recorder = TimerAction(
+        condition=IfCondition(use_recording),
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    'mkdir -p artifacts/bags && '
+                    'ros2 bag record '
+                    '-o artifacts/bags/session_$(date +%s) '
+                    '/scan '
+                    '/odometry/filtered '
+                    '/tf '
+                    '/tf_static '
+                    '/cmd_vel '
+                    '/map '
+                    '/part3/safety/estop_event '
+                    '/part3/system/state',
+                    # '/camera '          # ← 取消此行注释即可录制相机（体积大）
+                ],
+                output='screen',
+                name='session_recorder',
+            ),
+        ],
     )
 
     # ── M5. mapping_service（M5.C5.1）─────────────────────────────────────────
@@ -528,6 +658,11 @@ def generate_launch_description():
         nav2_node,              # M3. Nav2 导航栈（15s 后，use_nav2:=true 时启用）
         exploration_node,       # M4. Frontier 探索（45s 后，use_exploration:=true 时启用）
         map_manager_node,       # M4. 地图保存管理器（45s 后，随 exploration 一起启动）
+        twist_mux_node,          # C_S.1. 速度仲裁（始终启动，路由 /cmd_vel_nav2 → /cmd_vel）
+        safety_monitor_node,     # C_S.1. 移动障碍急停（use_safety:=true 时启用）
+        rolling_recorder_node,   # C_S.2. 5s 滚动录包，急停时写盘（use_safety:=true 时启用）
+        session_recorder,        # C_S.3. 全程录包，保存到 artifacts/bags/session_<ts>/（use_recording:=true 时启用）
         mapping_service_node,   # M5. 编排服务，提供 /part3/mapping/start
+        camera_node,            # M_P. 感知节点（5s 后，use_camera:=true 时启用）
         rviz2,                  # 8.  可视化
     ])
