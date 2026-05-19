@@ -142,11 +142,7 @@ class PhotoLoggerNode(Node):
         self.create_timer(5.0, self._publish_status)
  
         self.get_logger().info(
-            f"PhotoLoggerNode ready\n"
-            f"  artifact_dir  : {self._artifact_dir}\n"
-            f"  manifest      : {self._manifest_path}\n"
-            f"  copy_photos   : {self._copy_photos}\n"
-            f"  photos_dir    : {self._photos_dir}"
+            f"PhotoLogger ready — manifest={self._manifest_path}"
         )
  
     # ════════════════════════════════════════════════════════════════════
@@ -203,10 +199,8 @@ class PhotoLoggerNode(Node):
             self._colour += 1
  
         self.get_logger().info(
-            f"Logged: {fields['marker_type']} '{fields['label']}' "
-            f"at ({fields['x']}, {fields['y']}) "
-            f"conf={fields['confidence']} "
-            f"[total={self._total}]"
+            f"[LOG] {fields['marker_type']} {fields['label']} "
+            f"conf={fields['confidence']} total={self._total}"
         )
  
     # ════════════════════════════════════════════════════════════════════

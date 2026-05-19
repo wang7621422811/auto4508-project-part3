@@ -117,11 +117,7 @@ class GreekDetectorNode(Node):
         self._pub = self.create_publisher(
             String, "/part3/perception/marker_event", 10)
  
-        self.get_logger().info(
-            f"GreekDetectorNode ready — model='{self._model_path or 'NOT SET'}' "
-            f"photo_dir='{self._photo_dir}' "
-            f"cooldown={self._cooldown}s min_conf={self._min_conf}"
-        )
+        self.get_logger().info("GreekDetector ready.")
  
     # ════════════════════════════════════════════════════════════════════
     # Subscribers
@@ -168,10 +164,7 @@ class GreekDetectorNode(Node):
                 self._model_path,
                 providers=["CPUExecutionProvider"],
             )
-            self.get_logger().info(
-                f"ONNX model loaded: {self._model_path} "
-                f"labels={_LABELS}"
-            )
+            self.get_logger().info(f"Model loaded: {self._model_path}")
         except Exception as exc:
             self.get_logger().error(f"Failed to load ONNX model: {exc}")
  
@@ -212,9 +205,8 @@ class GreekDetectorNode(Node):
         self._publish(label, confidence, img_path)
  
         self.get_logger().info(
-            f"Greek letter detected: {label} "
-            f"conf={confidence:.2f} "
-            f"at ({self._robot_x:.2f}, {self._robot_y:.2f})"
+            f"[GREEK] {label} | conf={confidence:.2f} | "
+            f"robot=({self._robot_x:.2f},{self._robot_y:.2f})"
         )
  
     @staticmethod

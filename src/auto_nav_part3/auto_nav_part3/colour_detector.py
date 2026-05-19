@@ -108,10 +108,7 @@ class ColourDetectorNode(Node):
         self._pub = self.create_publisher(
             String, "/part3/perception/marker_event", 10)
  
-        self.get_logger().info(
-            f"ColourDetectorNode ready — photo_dir='{self._photo_dir}' "
-            f"cooldown={self._cooldown}s"
-        )
+        self.get_logger().info("ColourDetector ready.")
  
     # ════════════════════════════════════════════════════════════════════
     # Subscribers
@@ -167,9 +164,8 @@ class ColourDetectorNode(Node):
                 self._publish(colour, confidence, img_path)
  
                 self.get_logger().info(
-                    f"Detected {colour} at "
-                    f"({self._robot_x:.2f}, {self._robot_y:.2f}) "
-                    f"area={area:.0f}px conf={confidence:.2f}"
+                    f"[COLOUR] {colour} | conf={confidence:.2f} | "
+                    f"robot=({self._robot_x:.2f},{self._robot_y:.2f})"
                 )
                 break  # one detection per colour per frame
  
