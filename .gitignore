@@ -22,3 +22,7 @@ __pycache__/
 frames_**
 
 **.log
+
+./artifacts/bags
+./artifacts/maps
+./artifacts/**

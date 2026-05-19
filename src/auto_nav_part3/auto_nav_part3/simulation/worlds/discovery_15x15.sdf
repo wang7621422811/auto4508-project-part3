@@ -343,6 +343,46 @@
       </link>
     </model>
 
+    <!-- 测试用彩色障碍物：用于验证 colour_detector 识别 yellow / red ──────── -->
+
+    <!-- Yellow obstacle  at (-4.19, -1.77) — 颜色对应 HSV H≈30°，colour_detector 黄色范围 -->
+    <model name="ob_yellow_test">
+      <static>true</static>
+      <pose>-4.19 -1.77 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.95 0.85 0.0 1</ambient>
+            <diffuse>0.95 0.85 0.0 1</diffuse>
+            <specular>0.1  0.1  0.0 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Red obstacle  at (-5.0, 3.0) — 颜色对应 HSV H≈0°，colour_detector 红色范围 -->
+    <model name="ob_red_test">
+      <static>true</static>
+      <pose>-5.0 3.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.85 0.05 0.05 1</ambient>
+            <diffuse>0.85 0.05 0.05 1</diffuse>
+            <specular>0.1  0.0  0.0  1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <!--
       ── 35 × 35 m enclosure walls ────────────────────────────────────────────
       Four gray walls forming a closed 35 × 35 m square centered at origin.

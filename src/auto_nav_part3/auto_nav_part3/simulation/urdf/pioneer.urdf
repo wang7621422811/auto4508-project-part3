@@ -611,7 +611,7 @@
   <link name="cam_optical_link"/>
 
   <gazebo reference="cam_frame">
-    <sensor name="camera" type="camera">
+    <sensor name="camera" type="rgbd_camera">
       <pose>0 0 0 0 0 0</pose>
       <always_on>true</always_on>
       <update_rate>20</update_rate>

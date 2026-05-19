@@ -11,6 +11,8 @@ data_files = [
     ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
     # M1.C1.1：安装 EKF 配置文件，让 launch 文件能用 get_package_share_directory 找到它
     ('share/' + package_name + '/config', glob('config/*.yaml')),
+    # M_P：安装希腊字母 ONNX 模型，camera_bringup 通过 get_package_share_directory 定位
+    ('share/' + package_name + '/models', glob('resource/models/*.onnx') + glob('resource/models/*.onnx.data') + glob('resource/models/*.txt')),
 ]
 
 # Install the URDF in the expected package share path.
@@ -35,6 +37,7 @@ setup(
         package_name,
         package_name + '.mapping',
         package_name + '.navigation',
+        package_name + '.perception',
         package_name + '.system',
         package_name + '.safety',
     ],
@@ -61,6 +64,12 @@ setup(
             'safety_monitor    = auto_nav_part3.safety.safety_monitor:main',
             'rolling_recorder  = auto_nav_part3.safety.rolling_recorder:main',
             'teleop_keyboard   = auto_nav_part3.safety.teleop_keyboard:main',
+            # --- perception/ (M_P) ---
+            'greek_detector        = auto_nav_part3.perception.greek_detector:main',
+            'colour_detector       = auto_nav_part3.perception.colour_detector:main',
+            'photo_logger          = auto_nav_part3.perception.photo_logger:main',
+            'perception_adapter    = auto_nav_part3.perception.perception_adapter:main',
+            # 'oakd_camera           = auto_nav_part3.perception.oakd_camera:main', real robot use this one.
             # --- top-level ---
             'camera_info_publisher = auto_nav_part3.camera_info_publisher:main',
         ],

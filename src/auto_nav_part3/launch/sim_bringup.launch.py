@@ -44,7 +44,8 @@ ros_gz_bridge 话题表
   /joint_states  Gz → ROS    /joint_states       sensor_msgs/JointState
   /imu           Gz → ROS    /imu                sensor_msgs/Imu
   /scan          Gz → ROS    /scan               sensor_msgs/LaserScan
-  /camera        Gz → ROS    /camera             sensor_msgs/Image
+  /camera/image  Gz → ROS    /camera/image       sensor_msgs/Image   (rgbd_camera RGB)
+  /camera/depth_image Gz→ROS /camera/depth_image sensor_msgs/Image   (rgbd_camera depth)
   注：/tf 已从桥接表移除。所有 TF 均由 ROS 侧节点发布：
       静态 TF（base_link→laser_frame 等）由 robot_state_publisher 发布到 /tf_static
       动态 TF（odom→base_link）由 EKF 节点发布到 /tf
@@ -337,7 +338,9 @@ def generate_launch_description():
                     '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
                     '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
                     '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
-                    '/camera@sensor_msgs/msg/Image[gz.msgs.Image',
+                    # rgbd_camera 发布 RGB 到 /camera/image（非 /camera），深度到 /camera/depth_image
+                    '/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+                    '/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
                 ],
                 output='screen',
             ),
@@ -367,7 +370,7 @@ def generate_launch_description():
                     'horizontal_fov': 1.089,
                     'frame_id': 'cam_optical_link',
                     'publish_rate': 10.0,
-                    'camera_info_topic': '/camera_info',
+                    'camera_info_topic': '/camera/camera_info',
                 }],
             ),
         ],
