@@ -72,6 +72,15 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 
+# TRANSIENT_LOCAL：与 mapping_service 的 _enable_pub 匹配。
+# 两端同时为 TRANSIENT_LOCAL 才能触发 late-join replay，
+# 保证 exploration_node 在 mapping_service 发布 enable=true 后 45s 才启动时仍能收到消息。
+_ENABLE_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    depth=1,
+)
+
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
@@ -177,7 +186,7 @@ class ExplorationNode(Node):
 
         # ── 订阅 / 发布 ───────────────────────────────────────────────────────
         self.create_subscription(OccupancyGrid, '/map', self._map_cb, _map_qos)
-        self.create_subscription(Bool, '/part3/exploration/enable', self._enable_cb, 10)
+        self.create_subscription(Bool, '/part3/exploration/enable', self._enable_cb, _ENABLE_QOS)
         self._status_pub = self.create_publisher(String, '/part3/mapping/map_status', 10)
 
         # ── TF ───────────────────────────────────────────────────────────────
@@ -800,6 +809,47 @@ class ExplorationNode(Node):
         self._pub_status(coverage, [], done=True)
         self._active           = False
         self._exploration_done = True
+        self._return_home()
+
+    def _return_home(self) -> None:
+        """探索完成后自动导航回机器人启动位置（home）。"""
+        if not self._nav_server_ready:
+            if not self._nav_client.wait_for_server(timeout_sec=2.0):
+                self.get_logger().warn('[Home] /navigate_to_pose 不可用，无法返回起点')
+                return
+
+        self.get_logger().info(
+            f'[Home] 返回起点 ({self._home_x:.2f}, {self._home_y:.2f})'
+        )
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = PoseStamped()
+        goal_msg.pose.header.frame_id = 'map'
+        goal_msg.pose.header.stamp    = self.get_clock().now().to_msg()
+        goal_msg.pose.pose.position.x = self._home_x
+        goal_msg.pose.pose.position.y = self._home_y
+        goal_msg.pose.pose.orientation.w = 1.0
+
+        future = self._nav_client.send_goal_async(goal_msg)
+        future.add_done_callback(self._home_resp_cb)
+
+    def _home_resp_cb(self, future) -> None:
+        """_return_home 目标接受回调：等待导航结果。"""
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn('[Home] Nav2 拒绝返回请求')
+            return
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._home_result_cb)
+
+    def _home_result_cb(self, future) -> None:
+        """_return_home 导航结果回调：记录成功或失败。"""
+        status = future.result().status
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info(
+                f'[Home✓] 已到达起点 ({self._home_x:.2f}, {self._home_y:.2f})'
+            )
+        else:
+            self.get_logger().warn(f'[Home✗] 返回起点失败 (status={status})')
 
     def _pub_status(
         self,

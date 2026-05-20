@@ -15,7 +15,7 @@ Pipeline per frame:
 Subscribes:
   /oak/rgb/image_raw      sensor_msgs/Image   — colour camera feed
   /odom                   nav_msgs/Odometry   — robot position for location tagging
-  <depth_topic>           sensor_msgs/Image   — depth image (float32 m)
+  /scan                   sensor_msgs/LaserScan — LiDAR range (replaces depth camera)
 
 Publishes:
   /part3/perception/marker_event  std_msgs/String
@@ -26,8 +26,6 @@ Parameters
 ----------
   greek_model_path      — absolute path to greek_letters.onnx
                           Leave empty to disable (node still runs, just no detections)
-  depth_topic           — depth image topic (default: /camera/depth_image for sim;
-                          use /oak/stereo/depth for real OAK-D hardware)
   photo_dir             — directory to save annotated photos (default: artifacts/photos)
   jpeg_quality          — JPEG quality 0-100 (default 90)
   detection_cooldown_s  — seconds before same label re-detected (default 5.0)
@@ -61,10 +59,10 @@ import rclpy
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import String
 
-from .perception_utils import depth_to_odom
+from .perception_utils import lidar_to_odom
 
 # Alphabetical order — must match training label order exactly
 _LABELS: list[str] = sorted([
@@ -83,7 +81,6 @@ class GreekDetectorNode(Node):
 
         # ── parameters ───────────────────────────────────────────────────
         self.declare_parameter("greek_model_path",     "")
-        self.declare_parameter("depth_topic",          "/camera/depth_image")
         self.declare_parameter("photo_dir",            "artifacts/photos")
         self.declare_parameter("jpeg_quality",         90)
         self.declare_parameter("detection_cooldown_s", 5.0)
@@ -94,7 +91,6 @@ class GreekDetectorNode(Node):
 
         gp = self.get_parameter
         self._model_path   = gp("greek_model_path").get_parameter_value().string_value
-        self._depth_topic  = gp("depth_topic").get_parameter_value().string_value
         self._photo_dir    = gp("photo_dir").get_parameter_value().string_value
         self._jpeg_q       = gp("jpeg_quality").get_parameter_value().integer_value
         self._cooldown     = gp("detection_cooldown_s").get_parameter_value().double_value
@@ -110,10 +106,10 @@ class GreekDetectorNode(Node):
         self._robot_x: float     = 0.0
         self._robot_y: float     = 0.0
         self._robot_yaw: float   = 0.0
-        self._depth_frame        = None      # latest depth frame, float32 m
-        self._cam_hfov: float    = 1.089     # OAK-D / sim rgbd_camera HFOV ≈ 62°
+        self._latest_scan        = None          # 最新 LaserScan 消息
+        self._scan_stamp: float  = 0.0           # 上次 scan 到达的 monotonic 时间
+        self._cam_hfov: float    = 1.089         # OAK-D / sim rgbd_camera HFOV ≈ 62°
         self._last_detected: dict[str, float] = {}
-        self._last_debug_save: float = 0.0
         # label -> [(robot_x, robot_y), ...] positions where photo was saved
         self._saved_positions: dict[str, list] = {}
         self._model              = None
@@ -125,7 +121,7 @@ class GreekDetectorNode(Node):
         self.create_subscription(
             Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(
-            Image, self._depth_topic, self._on_depth, 10)
+            LaserScan, "/scan", self._on_scan, 10)
 
         # ── publishers ────────────────────────────────────────────────────
         self._pub = self.create_publisher(
@@ -134,7 +130,7 @@ class GreekDetectorNode(Node):
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.get_logger().info(
             f"GreekDetector ready | model='{self._model_path}' "
-            f"depth='{self._depth_topic}' min_conf={self._min_conf} "
+            f"lidar=/scan  min_conf={self._min_conf} "
             f"cooldown={self._cooldown}s photo_dir='{self._photo_dir}'"
         )
 
@@ -151,15 +147,15 @@ class GreekDetectorNode(Node):
             1.0 - 2.0 * (q.y * q.y + q.z * q.z),
         )
 
-    def _on_depth(self, msg: Image) -> None:
-        try:
-            raw = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            if raw.dtype == np.float32:
-                self._depth_frame = raw.copy()
-            else:
-                self._depth_frame = raw.astype(np.float32) * 0.001
-        except Exception:
-            pass
+    def _on_scan(self, msg: LaserScan) -> None:
+        self._latest_scan = msg
+        self._scan_stamp  = time.monotonic()
+        # self.get_logger().debug(
+        #     f"[SCAN] {len(msg.ranges)} 光束  "
+        #     f"角度 [{math.degrees(msg.angle_min):.0f}°, {math.degrees(msg.angle_max):.0f}°]  "
+        #     f"测距范围 [{msg.range_min:.2f}, {msg.range_max:.2f}]m",
+        #     throttle_duration_sec=10.0,
+        # )
 
     def _on_image(self, msg: Image) -> None:
         if not self._model_loaded:
@@ -213,21 +209,28 @@ class GreekDetectorNode(Node):
             )
             return
 
+        # ── 雷达可用性检查（早期退出，避免后续无效计算）────────────────────
+        if self._latest_scan is None:
+            self.get_logger().warn(
+                "[GREEK] /scan 尚未收到，跳过本帧检测",
+                throttle_duration_sec=5.0,
+            )
+            return
+        staleness = time.monotonic() - self._scan_stamp
+        if staleness > 1.0:
+            self.get_logger().warn(
+                f"[GREEK] 雷达数据已过期 {staleness:.1f}s（/scan 话题可能已停止），跳过帧",
+                throttle_duration_sec=5.0,
+            )
+            return
+
         # Step 1 — 必须先找到白色/灰色板块，才能裁切出字母区域
         paper_result = self._detect_paper(bgr)
         if paper_result is None:
-            self.get_logger().debug(
-                "No paper/board detected in frame.",
-                throttle_duration_sec=3.0,
-            )
-            # 每 10s 保存一帧相机原图，供离线分析 HSV 分布
-            now = time.monotonic()
-            if now - self._last_debug_save > 10.0:
-                self._last_debug_save = now
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                dbg_path = os.path.join(self._photo_dir, f"debug_cam_{ts}.jpg")
-                cv2.imwrite(dbg_path, bgr)
-                self.get_logger().debug(f"Debug frame saved: {dbg_path}")
+            # self.get_logger().debug(
+            #    "No paper/board detected in frame.",
+            #    throttle_duration_sec=3.0,
+            #)
             return
         src, cx_px, cy_px = paper_result
         # self.get_logger().debug(f"Paper detected at ({cx_px},{cy_px}).")
@@ -254,31 +257,50 @@ class GreekDetectorNode(Node):
         if self._on_cooldown(label):
             return
 
-        # Step 4 — 用深度图估算障碍物 odom 坐标
-        obs = depth_to_odom(
-            self._depth_frame, cx_px, cy_px,
-            self._robot_x, self._robot_y, self._robot_yaw,
+        # Step 4 — 用雷达测距估算障碍物 odom 坐标
+        fx = (bgr.shape[1] / 2.0) / math.tan(self._cam_hfov / 2.0)
+        # bearing: 正值=图像左侧=机器人左侧(+Y), 负值=右侧(-Y)
+        bearing_rad = math.atan2((bgr.shape[1] / 2.0) - cx_px, fx)
+        beam_idx = int(round(
+            (bearing_rad - self._latest_scan.angle_min)
+            / self._latest_scan.angle_increment
+        ))
+        obs = lidar_to_odom(
+            self._latest_scan, cx_px, bgr.shape[1],
             self._cam_hfov,
+            self._robot_x, self._robot_y, self._robot_yaw,
+            half_depth_m=0.0,   # 桶深度补偿忽略不计
         )
-        obs_x, obs_y, range_m = obs if obs else (self._robot_x, self._robot_y, float("nan"))
+        if obs is None:
+            self.get_logger().warn(
+                f"[GREEK] {label}: 雷达方位角 {math.degrees(bearing_rad):.1f}° "
+                f"(beam {beam_idx}/{len(self._latest_scan.ranges)}) 无有效测距，跳过",
+                throttle_duration_sec=5.0,
+            )
+            return
+        obs_x, obs_y, range_m = obs
 
-        # Step 5 — 新空间位置才存图：防止同一物体反复写入
+        self.get_logger().info(
+            f"[GREEK] {label} | conf={confidence:.2f} | "
+            f"cx_px={cx_px}  bearing={math.degrees(bearing_rad):.1f}°  beam={beam_idx}  "
+            f"range={range_m:.3f}m | "
+            f"robot=({self._robot_x:.2f},{self._robot_y:.2f})  "
+            f"yaw={math.degrees(self._robot_yaw):.1f}° | "
+            f"obs=({obs_x:.3f},{obs_y:.3f})"
+        )
+
+        # Step 5 — 新空间位置才存图：用观测坐标去重，防止绕桶行走重复写入同一物体
         img_path = ""
-        if self._is_new_location(label):
+        if self._is_new_location(label, obs_x, obs_y):
             ink_vis  = (tensor[0, 0] * 255).astype(np.uint8)
             ink_vis  = cv2.resize(ink_vis, (128, 128), interpolation=cv2.INTER_NEAREST)
             ts       = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             ink_path = os.path.join(self._photo_dir, f"ink_{label}_{ts}.jpg")
             cv2.imwrite(ink_path, ink_vis)
             img_path = self._save_photo(bgr, label, obs_x, obs_y)
-            self._saved_positions.setdefault(label, []).append(
-                (self._robot_x, self._robot_y))
+            self._saved_positions.setdefault(label, []).append((obs_x, obs_y))
 
         self._publish(label, confidence, img_path, cx_px, cy_px, obs_x, obs_y, range_m)
-        self.get_logger().info(
-            f"[GREEK] {label} | conf={confidence:.2f} | "
-            f"obs=({obs_x:.2f},{obs_y:.2f}) range={range_m:.2f}m"
-        )
 
     @staticmethod
     def _detect_paper(bgr: np.ndarray) -> Optional[tuple[np.ndarray, int, int]]:
@@ -411,13 +433,13 @@ class GreekDetectorNode(Node):
     # Helpers
     # ════════════════════════════════════════════════════════════════════
 
-    def _is_new_location(self, label: str) -> bool:
-        """当前机器人位置与所有已存图位置的最小距离 > new_object_dist_m 时返回 True。"""
+    def _is_new_location(self, label: str, obs_x: float, obs_y: float) -> bool:
+        """估算 marker 坐标与所有已记录位置均超过 new_object_dist_m 时返回 True。
+        用观测坐标而非机器人坐标，避免绕桶行走时同一物体被重复上报。"""
         positions = self._saved_positions.get(label, [])
         if not positions:
             return True
-        rx, ry = self._robot_x, self._robot_y
-        min_dist = min(math.hypot(rx - px, ry - py) for px, py in positions)
+        min_dist = min(math.hypot(obs_x - px, obs_y - py) for px, py in positions)
         return min_dist > self._new_obj_dist
 
     def _on_cooldown(self, label: str) -> bool:

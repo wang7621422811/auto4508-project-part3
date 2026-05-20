@@ -314,9 +314,10 @@ class WaypointServiceNode(Node):
         self.get_logger().info(f'[WaypointService] 路径规划: {plan_str}')
 
         # 导航在后台线程运行，服务立即返回 success=True（"命令已接受"语义）
+        # 传原始 marker 坐标（不是 approach_stops），让 _navigate 在失败时动态调整接近距离
         threading.Thread(
             target=self._navigate,
-            args=(approach_stops, home),
+            args=(order, home),
             daemon=True,
             name='waypoint_nav',
         ).start()
@@ -377,11 +378,13 @@ class WaypointServiceNode(Node):
             with open(path, 'r', encoding='utf-8') as fh:
                 data = json.load(fh)
 
+            # confirmed 字段由 perception_adapter 写入；旧文件无此字段则默认 True 向后兼容
             if self._marker_types == 'all':
                 pts = [
                     (float(item['x']), float(item['y']))
                     for item in data
                     if 'x' in item and 'y' in item
+                    and item.get('confirmed', True)
                 ]
             else:
                 pts = [
@@ -389,6 +392,7 @@ class WaypointServiceNode(Node):
                     for item in data
                     if item.get('type') == self._marker_types
                     and 'x' in item and 'y' in item
+                    and item.get('confirmed', True)
                 ]
 
             self.get_logger().info(
@@ -431,16 +435,13 @@ class WaypointServiceNode(Node):
         order: list[tuple[float, float]],
         home: tuple[float, float],
     ) -> None:
-        """后台线程：两阶段导航。
-        阶段 1：navigate_through_poses 访问所有路点
-        阶段 2：navigate_through_poses 返回 home（单点等效于 navigate_to_pose）
-        两阶段分离：home 在地图范围外时阶段 1 仍能成功，不会连带取消路点访问。
+        """后台线程：逐点导航，每个路点最多尝试 3 种接近距离（1×/1.5×/2× approach_dist），
+        三档全失败时跳过该路点继续，最后返回 home。
+        两阶段与 home 分离：home 不可达时仍上报 WAYPOINT_COMPLETE 而非 FAILED。
         """
 
-        # 停止 SLAM 建图，防止地图持续更新导致 Nav2 costmap 反复 resize 打断导航
         self._deactivate_slam()
 
-        # 等待 action server（Nav2 bt_navigator 启动较慢）
         self.get_logger().info('[WaypointService] 等待 /navigate_through_poses server...')
         if not self._nav_client.wait_for_server(timeout_sec=30.0):
             self.get_logger().error(
@@ -449,40 +450,57 @@ class WaypointServiceNode(Node):
             self._pub_str(self._state_pub, 'WAYPOINT_FAILED')
             return
 
-        # 清除 global costmap：探索结束后机器人可能在地图远端，
-        # costmap 边界尚未更新会导致 "Robot is out of bounds" 规划失败。
-        # clear 后 static_layer 用最新 /map 重建，确保 robot pose 在新边界内。
         self._clear_global_costmap()
 
-        # 计算所有路点的 PoseStamped，最后一个路点（home 前方的 approach stop）
-        # 的朝向用 home 方向，因此先把 home 加入序列计算朝向，再拆开。
-        all_poses = self._build_poses(order + [home])
-        waypoint_poses = all_poses[:-1]   # 路点部分（不含 home）
-        home_poses     = all_poses[-1:]   # home（单个，yaw=0）
+        # ── 阶段 1：逐点导航，不可达时依次放大接近距离，最终跳过 ────────────
+        # 每次 attempt 超时：总超时按路点数均分，最少 40s
+        per_timeout = max(40.0, self._nav_timeout / max(len(order), 1))
+        prev = home
 
-        # ── 阶段 1：访问路点 ──────────────────────────────────────────────
-        if waypoint_poses:
-            self.get_logger().info(
-                f'[WaypointService] 阶段1 发送 goal：{len(waypoint_poses)} 个路点'
-            )
-            ok = self._run_nav(waypoint_poses, timeout=self._nav_timeout)
-            if not ok:
-                self.get_logger().error('[WaypointService] 路点访问失败')
-                self._pub_str(self._state_pub, 'WAYPOINT_FAILED')
-                return
-            self.get_logger().info('[WaypointService] 阶段1 完成，所有路点已到达')
+        for idx, wp in enumerate(order):
+            reached = False
+            # 三档接近距离：1.0× → 1.5× → 2.0×
+            # 若 approach_dist=0 则三档均退化为直接导航到 marker（_approach_point 处理）
+            for mult in [1.0, 1.5, 2.0]:
+                ad = self._approach_dist * mult
+                ap = _approach_point(prev, wp, ad)
+                # 取 [ap, wp] 序列首个 pose：approach point 朝向 marker
+                nav_poses = self._build_poses([ap, wp])[:1]
+
+                self.get_logger().info(
+                    f'[WaypointService] 路点 {idx + 1}/{len(order)}: '
+                    f'approach_dist={ad:.2f}m  stop=({ap[0]:.2f},{ap[1]:.2f})'
+                )
+                if self._run_nav(nav_poses, timeout=per_timeout):
+                    prev = ap
+                    reached = True
+                    self.get_logger().info(
+                        f'[WaypointService] 路点 {idx + 1} 到达 (×{mult:.1f})'
+                    )
+                    break
+                suffix = '，尝试更大接近距离' if mult < 2.0 else '，跳过'
+                self.get_logger().warn(
+                    f'[WaypointService] 路点 {idx + 1} approach×{mult:.1f} 失败{suffix}'
+                )
+
+            if not reached:
+                self.get_logger().warn(
+                    f'[WaypointService] 路点 {idx + 1} {wp} 三种接近距离均失败，已跳过'
+                )
+                # prev 不更新，下一路点从当前实际位置计算接近方向
 
         # ── 阶段 2：返回 home ─────────────────────────────────────────────
         self.get_logger().info(
             f'[WaypointService] 阶段2 返回 home ({home[0]:.2f}, {home[1]:.2f})'
         )
-        ok = self._run_nav(home_poses, timeout=60.0)
+        home_pose = self._build_poses([home])[0]  # 单点 → yaw=0（朝 +x，与 spawn 一致）
+        ok = self._run_nav([home_pose], timeout=60.0)
         if ok:
             self.get_logger().info('[WaypointService] 已返回 home，任务完成')
             self._pub_str(self._state_pub, 'COMPLETE')
         else:
             self.get_logger().warn(
-                f'[WaypointService] 路点已全部到达，但无法返回 home '
+                f'[WaypointService] 路点导航完成，但无法返回 home '
                 f'({home[0]:.2f}, {home[1]:.2f})。'
                 'home 可能在地图范围外，请在 waypoint.yaml 设置 home_coordinate。'
             )

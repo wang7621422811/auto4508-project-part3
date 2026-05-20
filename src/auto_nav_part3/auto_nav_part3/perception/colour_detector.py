@@ -51,10 +51,10 @@ import rclpy
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import String
 
-from .perception_utils import depth_to_odom
+from .perception_utils import lidar_to_odom
 
 # ---------------------------------------------------------------------------
 # HSV colour ranges — tested against OAK-D on James Oval
@@ -108,7 +108,8 @@ class ColourDetectorNode(Node):
         self._robot_x: float      = 0.0
         self._robot_y: float      = 0.0
         self._robot_yaw: float    = 0.0
-        self._depth_frame         = None          # 最新深度帧 float32 m
+        self._latest_scan         = None          # 最新 LaserScan 消息
+        self._scan_stamp: float   = 0.0           # 上次 scan 到达的 monotonic 时间
         self._cam_hfov: float     = 1.089
         self._last_detected: dict[str, float] = {}  # label -> timestamp
         # label -> [(robot_x, robot_y), ...] 已存图时的机器人位置列表（空间去重）
@@ -120,7 +121,7 @@ class ColourDetectorNode(Node):
         self.create_subscription(
             Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(
-            Image, "/camera/depth_image", self._on_depth, 10)
+            LaserScan, "/scan", self._on_scan, 10)
 
         # ── publishers ────────────────────────────────────────────────────
         self._pub = self.create_publisher(
@@ -141,15 +142,15 @@ class ColourDetectorNode(Node):
             1.0 - 2.0 * (q.y * q.y + q.z * q.z),
         )
 
-    def _on_depth(self, msg: Image) -> None:
-        try:
-            raw = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            if raw.dtype == np.float32:
-                self._depth_frame = raw.copy()
-            else:
-                self._depth_frame = raw.astype(np.float32) * 0.001
-        except Exception:
-            pass
+    def _on_scan(self, msg: LaserScan) -> None:
+        self._latest_scan = msg
+        self._scan_stamp  = time.monotonic()
+        self.get_logger().debug(
+            f"[SCAN] {len(msg.ranges)} 光束  "
+            f"角度 [{math.degrees(msg.angle_min):.0f}°, {math.degrees(msg.angle_max):.0f}°]  "
+            f"测距范围 [{msg.range_min:.2f}, {msg.range_max:.2f}]m",
+            throttle_duration_sec=10.0,
+        )
 
     def _on_image(self, msg: Image) -> None:
         try:
@@ -165,6 +166,21 @@ class ColourDetectorNode(Node):
     # ════════════════════════════════════════════════════════════════════
 
     def _detect(self, bgr: np.ndarray) -> None:
+        # ── 雷达可用性检查（早期退出，避免后续无效计算）────────────────────
+        if self._latest_scan is None:
+            self.get_logger().warn(
+                "[COLOUR] /scan 尚未收到，跳过本帧所有颜色检测",
+                throttle_duration_sec=5.0,
+            )
+            return
+        staleness = time.monotonic() - self._scan_stamp
+        if staleness > 1.0:
+            self.get_logger().warn(
+                f"[COLOUR] 雷达数据已过期 {staleness:.1f}s（/scan 话题可能已停止），跳过帧",
+                throttle_duration_sec=5.0,
+            )
+            return
+
         hsv    = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         kernel = np.ones((5, 5), "uint8")
 
@@ -197,28 +213,40 @@ class ColourDetectorNode(Node):
             if area < _TRUSTED_MIN_AREA_PX or center_offset > _MAX_CENTER_OFFSET_FRAC:
                 continue
 
-            obs = depth_to_odom(
-                self._depth_frame, cx_px, cy_px,
-                self._robot_x, self._robot_y, self._robot_yaw,
+            # ── 用雷达测距估算障碍物 odom 坐标 ─────────────────────────────
+            fx = (bgr.shape[1] / 2.0) / math.tan(self._cam_hfov / 2.0)
+            # bearing: 正值=图像左侧=机器人左侧(+Y), 负值=右侧(-Y)
+            bearing_rad = math.atan2((bgr.shape[1] / 2.0) - cx_px, fx)
+            beam_idx = int(round(
+                (bearing_rad - self._latest_scan.angle_min)
+                / self._latest_scan.angle_increment
+            ))
+            obs = lidar_to_odom(
+                self._latest_scan, cx_px, bgr.shape[1],
                 self._cam_hfov,
+                self._robot_x, self._robot_y, self._robot_yaw,
             )
             if obs is None:
                 self.get_logger().warn(
-                    f"[COLOUR] {colour}: depth unavailable, falling back to robot position",
-                    throttle_duration_sec=10.0,
+                    f"[COLOUR] {colour}: 雷达方位角 {math.degrees(bearing_rad):.1f}° "
+                    f"(beam {beam_idx}/{len(self._latest_scan.ranges)}) 无有效测距，跳过",
+                    throttle_duration_sec=5.0,
                 )
-            obs_x, obs_y, range_m = obs if obs is not None else (
-                self._robot_x, self._robot_y, float("nan")
+                continue
+            obs_x, obs_y, range_m = obs
+
+            self.get_logger().info(
+                f"[COLOUR] {colour} | area={int(area)}px  cx_px={cx_px}  "
+                f"bearing={math.degrees(bearing_rad):.1f}°  beam={beam_idx}  "
+                f"range={range_m:.3f}m | "
+                f"robot=({self._robot_x:.2f},{self._robot_y:.2f})  "
+                f"yaw={math.degrees(self._robot_yaw):.1f}° | "
+                f"obs=({obs_x:.3f},{obs_y:.3f})"
             )
 
             confidence = min(1.0, area / 5000.0)
             img_path = self._maybe_save_photo(bgr, colour, x, y, w, h, obs_x, obs_y)
             self._publish(colour, confidence, img_path, cx_px, cy_px, obs_x, obs_y, range_m)
-
-            self.get_logger().info(
-                f"[COLOUR] {colour} | conf={confidence:.2f} | "
-                f"obs=({obs_x:.2f},{obs_y:.2f})"
-            )
 
     # ════════════════════════════════════════════════════════════════════
     # Helpers
@@ -228,21 +256,19 @@ class ColourDetectorNode(Node):
         self, bgr: np.ndarray, colour: str, x: int, y: int, w: int, h: int,
         obs_x: float, obs_y: float,
     ) -> str:
-        """只在新位置存图：机器人离所有已存图位置均 > new_object_dist_m 时才触发。"""
-        if not self._is_new_location(colour):
+        """只在新位置存图：用观测坐标去重，防止绕同一障碍物转圈时重复写入。"""
+        if not self._is_new_location(colour, obs_x, obs_y):
             return ""
-        self._saved_positions.setdefault(colour, []).append(
-            (self._robot_x, self._robot_y)
-        )
+        self._saved_positions.setdefault(colour, []).append((obs_x, obs_y))
         return self._save_photo(bgr, colour, x, y, w, h, obs_x, obs_y)
 
-    def _is_new_location(self, label: str) -> bool:
-        """当前机器人位置与所有已存图位置的最近距离 > new_object_dist_m 时返回 True。"""
+    def _is_new_location(self, label: str, obs_x: float, obs_y: float) -> bool:
+        """估算 marker 坐标与所有已记录位置均超过 new_object_dist_m 时返回 True。
+        用观测坐标而非机器人坐标，避免绕障碍物行走时同一物体被重复上报。"""
         positions = self._saved_positions.get(label, [])
         if not positions:
             return True
-        rx, ry = self._robot_x, self._robot_y
-        min_dist = min(math.hypot(rx - px, ry - py) for px, py in positions)
+        min_dist = min(math.hypot(obs_x - px, obs_y - py) for px, py in positions)
         return min_dist > self._new_obj_dist
 
     def _on_cooldown(self, label: str) -> bool:

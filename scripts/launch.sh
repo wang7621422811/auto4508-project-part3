@@ -202,6 +202,131 @@ case "$COMMAND" in
         exit 0
         ;;
 
+    # ── test: 运行感知工具单元测试（不需要 ROS / 仿真）──────────────────────
+    test)
+        NO_BUILD=false
+        PATTERN=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --no-build) NO_BUILD=true; shift ;;
+                -k)         shift; PATTERN="$1"; shift ;;  # pytest -k 过滤
+                *)          PATTERN="$1"; shift ;;
+            esac
+        done
+
+        if [[ "$NO_BUILD" == false ]]; then
+            do_build
+        else
+            warn "--no-build: 跳过 colcon build"
+        fi
+
+        echo ""
+        echo -e "${BOLD}━━━ Perception Unit Tests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+        cd "$WS_ROOT"
+
+        PYTEST_ARGS=("src/auto_nav_part3/test/test_perception_utils.py" "-v" "--tb=short")
+        [[ -n "$PATTERN" ]] && PYTEST_ARGS+=("-k" "$PATTERN")
+
+        info "pytest ${PYTEST_ARGS[*]}"
+        echo ""
+        set +e
+        pytest "${PYTEST_ARGS[@]}"
+        EXIT_CODE=$?
+        set -e
+        echo ""
+        if [[ $EXIT_CODE -eq 0 ]]; then
+            ok "全部测试通过。"
+        else
+            error "有测试失败，退出码 $EXIT_CODE"
+        fi
+        exit $EXIT_CODE
+        ;;
+
+    # ── camera: 单独启动感知节点（不需要仿真，用于离线/真机调试）─────────────
+    # 节点依赖：
+    #   /oak/rgb/image_raw  — 相机图像（用 image_publisher 或 USB 摄像头提供）
+    #   /scan               — 雷达扫描（用 fake_scan_pub.py 或真实雷达提供）
+    #   /odom               — 里程计（用 ros2 topic pub 提供）
+    # 检测结果监听：ros2 topic echo /part3/perception/marker_event
+    camera)
+        NO_BUILD=false
+        COOLDOWN="2.0"     # 测试时缩短冷却，方便重复触发
+        MIN_CONF="0.4"     # 测试时降低置信度阈值，容易触发
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --no-build)       NO_BUILD=true; shift ;;
+                --cooldown)       shift; COOLDOWN="$1"; shift ;;
+                --min-confidence) shift; MIN_CONF="$1"; shift ;;
+                *) warn "未知选项: $1"; shift ;;
+            esac
+        done
+
+        if [[ "$NO_BUILD" == false ]]; then
+            do_build
+        else
+            warn "--no-build: 跳过 colcon build"
+        fi
+        do_source
+
+        # 模型路径（从 install 目录找，build 后才存在）
+        MODEL_PATH="$WS_ROOT/install/auto_nav_part3/share/auto_nav_part3/models/greek_letters.onnx"
+        PHOTO_DIR="$WS_ROOT/artifacts/photos"
+
+        echo ""
+        echo -e "${BOLD}━━━ Camera Perception Test Mode ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+        info "colour_detector  订阅: /oak/rgb/image_raw  /scan  /odom"
+        info "greek_detector   订阅: /oak/rgb/image_raw  /scan  /odom"
+        info "perception_adapter 去重并写入 artifacts/waypoints/markers.json"
+        echo ""
+        warn "需要在其他终端提供以下话题（见下方提示）："
+        echo -e "  ${CYAN}/oak/rgb/image_raw${RESET}  — ros2 run image_publisher image_publisher_node <图片路径> --ros-args -r /image:=/oak/rgb/image_raw"
+        echo -e "  ${CYAN}/scan${RESET}               — python3 scripts/fake_scan_pub.py"
+        echo -e "  ${CYAN}/odom${RESET}               — ros2 topic pub /odom nav_msgs/msg/Odometry '{pose:{pose:{orientation:{w:1.0}}}}' --rate 10"
+        echo -e "  ${CYAN}监听结果${RESET}            — ros2 topic echo /part3/perception/marker_event"
+        echo ""
+
+        # 启动 colour_detector（use_sim_time:=false，不等待 /clock）
+        info "启动 colour_detector ..."
+        ros2 run auto_nav_part3 colour_detector \
+            --ros-args \
+            -p use_sim_time:=false \
+            -p photo_dir:="$PHOTO_DIR" \
+            -p detection_cooldown_s:="$COOLDOWN" \
+            -p min_area_px:=1500 &
+        PID_COLOUR=$!
+
+        sleep 1
+
+        # 启动 greek_detector（greek_model_path 可能不存在，节点会打 warn 但不崩溃）
+        info "启动 greek_detector ..."
+        ros2 run auto_nav_part3 greek_detector \
+            --ros-args \
+            -p use_sim_time:=false \
+            -p photo_dir:="$PHOTO_DIR" \
+            -p greek_model_path:="$MODEL_PATH" \
+            -p detection_cooldown_s:="$COOLDOWN" \
+            -p min_confidence:="$MIN_CONF" &
+        PID_GREEK=$!
+
+        sleep 1
+
+        # 启动 perception_adapter
+        info "启动 perception_adapter ..."
+        ros2 run auto_nav_part3 perception_adapter \
+            --ros-args \
+            -p use_sim_time:=false \
+            -p dedup_radius_m:=1.0 \
+            -p waypoints_save_dir:="$WS_ROOT/artifacts/waypoints" &
+        PID_ADAPTER=$!
+
+        ok "全部感知节点已启动。Ctrl+C 停止所有节点。"
+        echo ""
+
+        # 捕获 Ctrl+C，清理所有后台节点
+        trap "info '停止所有节点...'; kill $PID_COLOUR $PID_GREEK $PID_ADAPTER 2>/dev/null; exit 0" INT TERM
+        wait
+        ;;
+
     build)
         do_build
         do_source

@@ -66,18 +66,22 @@ class PerceptionAdapterNode(Node):
         super().__init__('perception_adapter')
 
         # ── 参数 ──────────────────────────────────────────────────────────
-        self.declare_parameter('dedup_radius_m',  1.0)
-        self.declare_parameter('publish_rate_hz', 2.0)
-        self.declare_parameter('map_frame',       'map')
-        self.declare_parameter('odom_frame',      'odom')
+        self.declare_parameter('dedup_radius_m',   2.0)
+        self.declare_parameter('publish_rate_hz',  2.0)
+        self.declare_parameter('map_frame',        'map')
+        self.declare_parameter('odom_frame',       'odom')
         # 持久化路径：markers.json 保存到此目录，节点重启后自动恢复
         self.declare_parameter('waypoints_save_dir', 'artifacts/waypoints')
+        # 确认阈值：count < N 且 confidence < 0.90 的条目视为"待确认"，不发布给下游
+        # 已观测 N 次或单次 confidence ≥ 0.90 即视为确认，写入 confirmed=true
+        self.declare_parameter('min_confirm_count', 2)
 
         gp = self.get_parameter
-        self._dedup_r     = gp('dedup_radius_m').get_parameter_value().double_value
-        self._rate        = gp('publish_rate_hz').get_parameter_value().double_value
-        self._map_frame   = gp('map_frame').get_parameter_value().string_value
-        self._odom_frame  = gp('odom_frame').get_parameter_value().string_value
+        self._dedup_r         = gp('dedup_radius_m').get_parameter_value().double_value
+        self._rate            = gp('publish_rate_hz').get_parameter_value().double_value
+        self._map_frame       = gp('map_frame').get_parameter_value().string_value
+        self._odom_frame      = gp('odom_frame').get_parameter_value().string_value
+        self._min_confirm     = gp('min_confirm_count').get_parameter_value().integer_value
         _save_dir         = gp('waypoints_save_dir').get_parameter_value().string_value
         os.makedirs(_save_dir, exist_ok=True)
         self._markers_json_path = os.path.join(_save_dir, 'markers.json')
@@ -121,6 +125,7 @@ class PerceptionAdapterNode(Node):
 
         self.get_logger().info(
             f'PerceptionAdapter 就绪  dedup={self._dedup_r}m  '
+            f'min_confirm={self._min_confirm}  '
             f'frame={self._map_frame}  odom_frame={self._odom_frame}  rate={self._rate}Hz  '
             f'json={self._markers_json_path}'
         )
@@ -234,8 +239,9 @@ class PerceptionAdapterNode(Node):
 
     def _publish_markers(self) -> None:
         """定时将去重 marker 列表发布为 PoseArray（map 帧）。
-        同时向 /part3/perception/greek_markers 单独发布希腊字母 marker，
-        供 waypoint_service 直接消费，无需在下游再做 type 过滤。
+        只发布已确认条目（count>=min_confirm_count 或 confidence>=0.90），
+        过滤掉低质量的单次误检，防止噪音路点进入 waypoint_service。
+        同时向 /part3/perception/greek_markers 单独发布希腊字母 marker。
         """
         now = self.get_clock().now().to_msg()
 
@@ -248,6 +254,9 @@ class PerceptionAdapterNode(Node):
         greek_msg.header.frame_id = self._map_frame
 
         for entry in self._markers:
+            # 未确认条目不发布：防止单次误检污染下游路点规划
+            if entry.count < self._min_confirm and entry.confidence < 0.90:
+                continue
             pose = Pose()
             pose.position    = Point(x=entry.x, y=entry.y, z=0.0)
             pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
@@ -298,7 +307,9 @@ class PerceptionAdapterNode(Node):
     # ════════════════════════════════════════════════════════════════════
 
     def _save_markers(self) -> None:
-        """把当前 _markers 列表序列化到 markers.json，写失败只打 warn 不崩溃。"""
+        """把当前 _markers 列表序列化到 markers.json，写失败只打 warn 不崩溃。
+        confirmed=true 表示 count>=min_confirm_count 或 confidence>=0.90，
+        未确认条目也保存（供跨重启累计 count），但 confirmed=false 供下游过滤。"""
         try:
             data = [
                 {
@@ -309,6 +320,7 @@ class PerceptionAdapterNode(Node):
                     'y':          round(e.y, 4),
                     'confidence': round(e.confidence, 4),
                     'count':      e.count,
+                    'confirmed':  (e.count >= self._min_confirm or e.confidence >= 0.90),
                 }
                 for e in self._markers
             ]

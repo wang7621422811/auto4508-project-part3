@@ -22,8 +22,17 @@ response.success 语义：True = "命令已接受"，不代表探索已完成。
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+
+# TRANSIENT_LOCAL（相当于 latched topic）：发布者保留最后一条消息，
+# 新加入的订阅者（如延迟 45s 启动的 exploration_node）可立即收到当前状态。
+_ENABLE_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    depth=1,
+)
 
 
 class MappingService(Node):
@@ -39,7 +48,9 @@ class MappingService(Node):
         # 系统状态：IDLE / MAPPING / COMPLETE
         self._state_pub = self.create_publisher(String, '/part3/system/state', 10)
         # 探索开关：true = 开始，false = 停止（exploration_node 订阅此话题）
-        self._enable_pub = self.create_publisher(Bool, '/part3/exploration/enable', 10)
+        # TRANSIENT_LOCAL：exploration_node 延迟 45s 启动，若用默认 VOLATILE，
+        # enable=true 消息会在订阅者加入前丢失，导致探索永远无法启动。
+        self._enable_pub = self.create_publisher(Bool, '/part3/exploration/enable', _ENABLE_QOS)
 
         # ── 订阅者：监听探索进度 ──────────────────────────────────────────────
         # exploration_node 周期发布 "coverage=68% frontiers=3 area=15x15"

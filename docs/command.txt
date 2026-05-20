@@ -2,3 +2,12 @@ ros2 service call /part3/mapping/start std_srvs/srv/Trigger {} ：Mapping
 ros2 service call /part3/mapping/save_map std_srvs/srv/Trigger {} Save map
 
 ros2 service call /part3/waypoint/start std_srvs/srv/Trigger {}:  Start waypoint navigation
+
+# checking status
+source install/setup.bash
+
+ros2 topic echo /part3/system/state &
+ros2 topic echo /part3/mapping/map_status &
+ros2 topic echo /part3/waypoint/plan &
+ros2 topic echo /part3/perception/marker_event &
+wait
