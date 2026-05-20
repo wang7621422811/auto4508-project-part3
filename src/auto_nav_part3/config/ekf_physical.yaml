@@ -4,7 +4,8 @@
 #
 # 对应硬件：
 #   底盘里程计  : Pioneer 3-AT + ARIA 驱动 → /odom (nav_msgs/Odometry)
-#   IMU         : Phidget Spatial 3/3/3    → /imu  (sensor_msgs/Imu)
+#   IMU         : Phidget Spatial 3/3/3    → /imu/data_raw (sensor_msgs/Imu)
+#                 (ros2 launch phidgets_spatial spatial-launch.py 实测发布名)
 #
 # 与 ekf.yaml（仿真版）的核心差异：
 #   1. frequency: 30.0     真机 CPU 性能充足，不受 ARM VM 15Hz 限制
@@ -66,10 +67,9 @@ ekf_filter_node:
     odom0_relative: false
 
     # ── 传感器 1：IMU (Phidget Spatial 3/3/3) ────────────────────────────────
-    # TODO: 确认 Phidget ROS2 驱动发布的 IMU 话题名称
-    # 常见发布名：/imu/data  /imu  /phidget/imu
-    # 若不同，在此修改或在 physical_bringup.launch.py 中用 remappings 对齐到 /imu
-    imu0: /imu
+    # Phidget ROS2 驱动实测发布名：/imu/data_raw
+    # (ros2 launch phidgets_spatial spatial-launch.py → /imu/data_raw @ 125Hz)
+    imu0: /imu/data_raw
 
     # Phidget Spatial 提供可靠的角速度（陀螺仪）和线加速度。
     # vyaw（角速度）：Phidget 陀螺仪比 ARIA odom 积分更可靠，启用。

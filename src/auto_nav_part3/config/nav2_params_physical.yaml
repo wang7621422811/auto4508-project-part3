@@ -93,11 +93,10 @@ controller_server:
       wz_std: 0.4
       # ⚠️  真机安全速度上限：Pioneer 3-AT 最大线速 1.2m/s，取保守值 0.7m/s。
       # TODO: 首次上机以 0.3m/s 验证，稳定后逐步提高到 0.7m/s。
-      vx_max: 0.7
-      vx_min: -0.2          # 允许小幅后退（真机比仿真更保守）
-      vy_max: 0.5
-      # ⚠️  真机角速上限：Pioneer 3-AT 最大角速约 2.0 rad/s，取保守值 1.5 rad/s。
-      wz_max: 1.5
+      vx_max: 0.3            # 首次上机低速测试，稳定后改回 0.7
+      vx_min: -0.1
+      vy_max: 0.3
+      wz_max: 0.8            # 首次上机低速测试，稳定后改回 1.5
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1

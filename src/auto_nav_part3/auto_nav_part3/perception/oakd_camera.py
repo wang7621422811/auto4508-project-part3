@@ -65,12 +65,20 @@ class OakDCamera(Node):
                 with dai.Device(pipeline) as device:
                     self.device = device
                     self.get_logger().info(f'OAK-D connected: {device.getMxId()}')
-                    q_rgb = device.getOutputQueue('rgb', maxSize=4, blocking=False)
-                    q_depth = device.getOutputQueue('depth', maxSize=4, blocking=False)
+                    # blocking=True: 每次 get() 等待直到有帧，避免 tryGet() 静默丢帧
+                    q_rgb   = device.getOutputQueue('rgb',   maxSize=2, blocking=True)
+                    q_depth = device.getOutputQueue('depth', maxSize=2, blocking=True)
+
+                    rgb_count = 0
+                    depth_count = 0
 
                     while rclpy.ok():
+                        # 用 tryGet() 但加诊断日志确认帧是否到达
                         rgb = q_rgb.tryGet()
                         if rgb is not None:
+                            rgb_count += 1
+                            if rgb_count == 1:
+                                self.get_logger().info('First RGB frame received')
                             frame = rgb.getCvFrame()
                             msg = Image()
                             msg.header.stamp = self.get_clock().now().to_msg()
@@ -83,6 +91,9 @@ class OakDCamera(Node):
 
                         depth = q_depth.tryGet()
                         if depth is not None:
+                            depth_count += 1
+                            if depth_count == 1:
+                                self.get_logger().info('First depth frame received')
                             frame = depth.getCvFrame()
                             msg = Image()
                             msg.header.stamp = self.get_clock().now().to_msg()
@@ -93,7 +104,13 @@ class OakDCamera(Node):
                             msg.data = frame.tobytes()
                             self.depth_pub.publish(msg)
 
-                        time.sleep(0.01)
+                        # 每 200 帧打一次统计（约每 13s）
+                        total = rgb_count + depth_count
+                        if total > 0 and total % 200 == 0:
+                            self.get_logger().info(
+                                f'OAK-D frames: rgb={rgb_count} depth={depth_count}')
+
+                        time.sleep(0.005)  # 5ms 轮询，降低 CPU 占用同时减少漏帧
 
             except Exception as e:
                 self.get_logger().warn(f'OAK-D error: {e}. Retrying in 3s...')

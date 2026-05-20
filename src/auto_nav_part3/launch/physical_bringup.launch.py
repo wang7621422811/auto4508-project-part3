@@ -207,70 +207,52 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── TODO: Aria 底盘驱动节点 (C6.1) ──────────────────────────────────────
-    # 功能：订阅 /cmd_vel，驱动 Pioneer 3-AT 电机；发布 /odom（nav_msgs/Odometry）。
-    # 安装方式（上机前执行）：
-    #   git clone https://github.com/MobileRobots/ros2aria.git src/ros2aria
-    #   colcon build --packages-select ros2aria
-    # 关键配置：
-    #   - 串口设备：通过 aria_port 参数（默认 /dev/ttyUSB0）
-    #   - 关闭 ARIA 自身的 odom→base_link TF 发布（由 EKF 接管）
-    #   - wheel_separation=0.394m, wheel_radius=0.111m（与 URDF 一致）
-    # TODO: 上机前解注释以下代码，确认 ros2aria 包名和节点名正确。
-    #
-    # aria_driver = TimerAction(
-    #     period=1.0,
-    #     actions=[
-    #         Node(
-    #             package='ros2aria',                 # TODO: 确认包名
-    #             executable='ros2aria',              # TODO: 确认可执行文件名
-    #             name='aria_driver',
-    #             output='screen',
-    #             parameters=[{
-    #                 'use_sim_time': False,
-    #                 'port': LaunchConfiguration('aria_port'),
-    #                 # TODO: 确认 ros2aria 关闭 TF 发布的参数名
-    #                 # 'publish_tf': False,           # EKF 接管 odom→base_link TF
-    #             }],
-    #             remappings=[
-    #                 # TODO: 若 ros2aria 发布到 /RosAria/pose，remap 到 /odom
-    #                 # ('/RosAria/pose', '/odom'),
-    #             ],
-    #         ),
-    #     ],
-    # )
+    # ── Aria 底盘驱动节点 (C6.1) ─────────────────────────────────────────────
+    # 实测命令：ros2 run ariaNode ariaNode -rp /dev/ttyUSB0
+    #   包名: ariaNode, 可执行文件名: ariaNode
+    #   端口通过位置参数 -rp 传入（非 ROS2 parameter），发布 /odom @ 49Hz
+    # ⚠️  Aria 节点是否发布 odom→base_link TF 需确认：
+    #     若发布，EKF 会双源冲突 → 需加 --ros-args -p publish_transform:=false
+    #     用 `ros2 run tf2_ros tf2_echo odom base_link` 确认
+    aria_driver = TimerAction(
+        period=1.0,
+        actions=[
+            Node(
+                package='ariaNode',
+                executable='ariaNode',
+                name='aria_driver',
+                output='screen',
+                arguments=['-rp', LaunchConfiguration('aria_port')],
+                parameters=[{'use_sim_time': False}],
+            ),
+        ],
+    )
 
-    # ── TODO: SICK 激光雷达驱动节点 (C6.2) ──────────────────────────────────
-    # 功能：通过 TCP 连接激光雷达，发布 /scan（sensor_msgs/LaserScan）。
-    # 安装方式（上机前执行）：
-    #   git clone https://github.com/SICKAG/sick_scan_xd.git src/sick_scan_xd
-    #   colcon build --packages-select sick_scan_xd
-    # 关键配置：
-    #   - lidar_ip 参数（通过 Launch argument 传入）
-    #   - frame_id 必须与 URDF 中 laser_frame 一致
-    #   - SICK TIMS7xx 使用 sick_tim_7xx.launch.xml；Lakibeam 使用对应 launch
-    # TODO: 上机前解注释以下代码，确认 lidar_ip 和 launch 文件路径正确。
-    #
-    # sick_lidar = TimerAction(
-    #     period=1.0,
-    #     actions=[
-    #         Node(
-    #             package='sick_scan_xd',             # TODO: 确认包名
-    #             executable='sick_generic_caller',   # TODO: 确认可执行文件名
-    #             name='sick_scan',
-    #             output='screen',
-    #             parameters=[{
-    #                 'use_sim_time': False,
-    #                 'hostname': LaunchConfiguration('lidar_ip'),
-    #                 'frame_id': 'laser_frame',      # 必须与 URDF 一致
-    #                 'scanner_name': 'sick_tim_7xx', # TODO: 根据实际型号修改
-    #             }],
-    #             remappings=[
-    #                 # sick_scan_xd 默认发布 /scan，与系统约定一致，通常无需 remap
-    #             ],
-    #         ),
-    #     ],
-    # )
+    # ── SICK 激光雷达驱动节点 (C6.2) ────────────────────────────────────────
+    # 实测：激光通过，frame_id=laser_frame 与 URDF 一致（grep 已确认）
+    # ⚠️  scanner_name 根据实际型号选择：
+    #     SICK TIMS7xx → sick_tim_7xx
+    #     Lakibeam1    → lakibeam1
+    sick_lidar = TimerAction(
+        period=1.0,
+        actions=[
+            Node(
+                package='sick_scan_xd',
+                executable='sick_generic_caller',
+                name='sick_scan',
+                output='screen',
+                parameters=[{
+                    'use_sim_time': False,
+                    'hostname': LaunchConfiguration('lidar_ip'),
+                    'frame_id': 'laser_frame',
+                    'scanner_type': 'sick_tim_7xx',
+                }],
+                remappings=[
+                    ('sick_tim_7xx/scan', '/scan'),
+                ],
+            ),
+        ],
+    )
 
     # ── OAK-D V2 相机节点 (C6.3) ────────────────────────────────────────────
     # 功能：用 depthai 驱动 OAK-D V2，发布 /oak/rgb/image_raw 和 /oak/stereo/depth。
@@ -585,9 +567,9 @@ def generate_launch_description():
         # ── 基础层（始终启动）──────────────────────────────────────────────
         joint_state_publisher,      # URDF 关节零状态 → RSP 可立即计算 TF
         robot_state_publisher,      # URDF → 静态 TF（base_link→laser_frame 等）
-        # ── TODO: 底层驱动（上机前解注释）──────────────────────────────────
-        # aria_driver,              # C6.1: Pioneer 底盘驱动（/odom, /cmd_vel）
-        # sick_lidar,               # C6.2: SICK 激光雷达驱动（/scan）
+        # ── 底层驱动 ────────────────────────────────────────────────────────
+        aria_driver,              # C6.1: Pioneer 底盘驱动（/odom, /cmd_vel）
+        sick_lidar,               # C6.2: SICK 激光雷达驱动（/scan）
         # ── 相机驱动（始终启动）────────────────────────────────────────────
         oakd_camera_node,           # C6.3: OAK-D V2 驱动（/oak/rgb/image_raw）
         # ── 定位层 ──────────────────────────────────────────────────────────
