@@ -241,23 +241,6 @@
       </link>
     </model>
 
-    <model name="ob_c">
-      <static>true</static>
-      <pose>0.5 -1.5 0.3 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
-          <material>
-            <ambient>0.8 0.1 0.1 1</ambient>
-            <diffuse>0.8 0.1 0.1 1</diffuse>
-          </material>
-        </visual>
-      </link>
-    </model>
-
     <model name="ob_n2">
       <static>true</static>
       <pose>0.5 5.0 0.3 0 0 0</pose>

@@ -68,14 +68,25 @@ _GREEK_MODEL  = os.path.join(_PKG_SHARE, 'models', 'greek_letters.onnx')
 def generate_launch_description() -> LaunchDescription:
 
     # ── Launch arguments ─────────────────────────────────────────────────────
-    # detection_cooldown 是唯一的运行时可调参数；
-    # 由 sim_bringup 透传（固定为 '5.0'），也可命令行覆盖。
+    # detection_cooldown: 由 sim_bringup 透传（固定为 '5.0'），也可命令行覆盖。
+    # use_sim_time: 默认 true（仿真模式）；单独测试时传 false。
+    # image_topic: 仿真中桥接话题为 /camera/image；真机/离线测试时为 /oak/rgb/image_raw。
     # 路径类参数（photo_dir / artifact_dir / greek_model_path）均固定为模块级常量，
     # 无需从命令行传入，避免用户误拼路径。
     cooldown_arg = DeclareLaunchArgument(
         'detection_cooldown',
         default_value='5.0',
         description='Seconds before same label can be re-detected',
+    )
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use simulation clock (true=Gazebo sim, false=real robot or offline test)',
+    )
+    image_topic_arg = DeclareLaunchArgument(
+        'image_topic',
+        default_value='/camera/image',
+        description='Image topic to remap /oak/rgb/image_raw to (/camera/image for sim, /oak/rgb/image_raw for real robot)',
     )
 
     # ── colour_detector（彩色障碍物检测）────────────────────────────────────
@@ -136,7 +147,9 @@ def generate_launch_description() -> LaunchDescription:
     # ── perception_adapter（marker 去重 + PoseArray 发布）──────────────────
     # 订阅 /part3/perception/marker_event，维护去重 marker 列表，
     # 发布 /part3/perception/markers (PoseArray)，供 waypoint_service (C_W.1) 消费。
-    # dedup_radius_m：同一位置 1.0m 内的重复检测合并为一条记录。
+    # dedup_radius_m：2.0m 范围内同标签合并，覆盖雷达+odom 融合误差（实测最大 1.39m）。
+    # min_confirm_count：count < N 且 confidence < 0.90 的条目视为待确认，不发布给下游，
+    #   防止单帧误识别（模型误分类）污染路点规划，同时跨重启仍可累计观测次数。
     # waypoints_save_dir：用绝对路径（从 _WS_ROOT 计算），与 CWD 无关。
     _WAYPOINTS_DIR = os.path.join(_WS_ROOT, 'artifacts', 'waypoints')
     perception_adapter = Node(
@@ -146,7 +159,8 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[{
             'use_sim_time':       True,
-            'dedup_radius_m':     1.0,                    # 去重距离阈值
+            'dedup_radius_m':     2.0,                    # 去重距离阈值（雷达误差实测，保持 2.0m）
+            'min_confirm_count':  2,                      # 至少观测 2 次才确认（单次误检过滤）
             'publish_rate_hz':    2.0,                    # PoseArray 定期发布频率
             'map_frame':          'map',                  # 坐标输出帧
             'odom_frame':         'odom',                 # detector 输出坐标帧
