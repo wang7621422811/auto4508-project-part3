@@ -72,7 +72,6 @@ Launch arguments
     use_exploration:=false  use_slam:=false use_rviz:=false use_safety:=false \
         use_camera:=true
 
-
 """
 
 import os
