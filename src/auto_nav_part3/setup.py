@@ -69,7 +69,8 @@ setup(
             'colour_detector       = auto_nav_part3.perception.colour_detector:main',
             'photo_logger          = auto_nav_part3.perception.photo_logger:main',
             'perception_adapter    = auto_nav_part3.perception.perception_adapter:main',
-            # 'oakd_camera           = auto_nav_part3.perception.oakd_camera:main', real robot use this one.
+            # Real robot use this one.
+            'oakd_camera           = auto_nav_part3.perception.oakd_camera:main',
             # --- top-level ---
             'camera_info_publisher = auto_nav_part3.camera_info_publisher:main',
         ],

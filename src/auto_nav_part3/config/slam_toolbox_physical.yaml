@@ -1,0 +1,116 @@
+# =============================================================================
+# slam_toolbox_physical.yaml — slam_toolbox 物理机配置 (M6 / M2.C2.1)
+# =============================================================================
+#
+# 对应硬件：SICK TIMS7xx / Lakibeam 激光雷达 → /scan (sensor_msgs/LaserScan)
+#
+# 与 slam_toolbox.yaml（仿真版）的核心差异：
+#   1. max_laser_range: 20.0  SICK TIMS7xx 有效量程 ~25m，实测取 20m（滤远端噪声）
+#   2. transform_publish_period: 0.05  真机时钟精确，20Hz 发布 TF 稳定
+#   3. transform_timeout: 0.2  真机 TF 时间戳更准，降低容差
+#   4. minimum_time_interval: 0.033  真机 CPU 充足，约 30Hz 处理扫描
+#   5. minimum_travel_distance: 0.15  真机 odom 更精确，缩小移动阈值，建图更细腻
+#   6. debug_logging: false  真机演示保持关闭，出问题时再开
+#
+# ⚠️  frame_id 必须与 URDF 中激光雷达 link 名称完全一致（laser_frame）。
+#     若 SICK 驱动发布的 frame_id 不同，在 physical_bringup 中用 remappings 或
+#     驱动参数修改（sick_scan_xd: frame_id 参数）。
+# TODO: 到实验室后确认 SICK 驱动发布的 frame_id 与 URDF laser_frame 一致。
+#
+# =============================================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ── 坐标系（必须与 EKF / URDF 完全一致）─────────────────────────────────
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    # TODO: 确认 SICK 驱动发布 /scan 的 frame_id 与 URDF laser_frame 一致
+    scan_topic: /scan
+
+    # ── 运行模式 ─────────────────────────────────────────────────────────────
+    mode: mapping
+
+    # ── 地图分辨率（与仿真保持一致，便于地图复用）───────────────────────────
+    resolution: 0.05
+
+    # ── 激光参数 ─────────────────────────────────────────────────────────────
+    # SICK TIMS7xx 额定量程 ~25m；取 20m 过滤最远端噪声点。
+    # Lakibeam 约 30m；如果用 Lakibeam 可酌情调高到 25m。
+    max_laser_range: 20.0
+
+    # ── 频率控制 ─────────────────────────────────────────────────────────────
+    throttle_scans: 1
+
+    # 真机 odom 精度较高，0.15m 即触发建图更新（比仿真 0.2m 更细腻）。
+    minimum_travel_distance: 0.15
+
+    # 真机 Nav2 Spin 恢复转速较慢，0.5 rad 间隔下 ICP 匹配可靠。
+    minimum_travel_heading: 0.5
+
+    # 真机 CPU 充足，约 30Hz 处理扫描（0.033s 间隔）。
+    # 比仿真 0.05s 更快，减少 TF 查询延迟导致的 map→odom 跳变。
+    minimum_time_interval: 0.033
+
+    # ── TF 发布 ──────────────────────────────────────────────────────────────
+    # 真机时钟精确（无仿真时间步长问题），20Hz 发布 TF 稳定。
+    transform_publish_period: 0.05
+
+    # 真机 TF 时间戳准确，0.2s 容差足够（仿真需要 0.3s 缓冲）。
+    transform_timeout: 0.2
+
+    tf_buffer_duration: 30.0
+
+    # ── 地图更新 ─────────────────────────────────────────────────────────────
+    # 1.0s 周期发布 /map，与仿真版保持一致（RViz 显示及 Nav2 代价地图更新）。
+    map_update_interval: 1.0
+
+    # ── 扫描匹配 ─────────────────────────────────────────────────────────────
+    use_scan_matching: true
+    use_scan_barycenter: true
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+
+    # ── 闭环检测 ─────────────────────────────────────────────────────────────
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_search_maximum_distance: 3.0
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+
+    # ── 相关性搜索参数 ───────────────────────────────────────────────────────
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ── 角度/距离惩罚参数 ────────────────────────────────────────────────────
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+
+    # ── Ceres 求解器 ─────────────────────────────────────────────────────────
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ── 内存 ─────────────────────────────────────────────────────────────────
+    stack_size_to_use: 40000000
+
+    # ── 调试 ─────────────────────────────────────────────────────────────────
+    debug_logging: false
+    enable_interactive_mode: true

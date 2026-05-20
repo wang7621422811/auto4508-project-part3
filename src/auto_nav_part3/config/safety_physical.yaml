@@ -1,0 +1,52 @@
+# =============================================================================
+# safety_physical.yaml — 安全监控 + 滚动录包 物理机配置 (C_S.1 / C_S.2)
+# =============================================================================
+#
+# 对应硬件：SICK TIMS7xx / Lakibeam 激光雷达 → /scan
+#
+# 与 safety.yaml（仿真版）的核心差异：
+#   1. moving_delta_m: 0.10   SICK 雷达测距精度 ±30mm，阈值可降低（仿真 0.15m）
+#   2. consecutive_frames: 5  真机更保守：需 5 帧连续确认才急停（仿真 3 帧）
+#                             减少因 SICK 多路径噪声或行人快速经过导致的误报
+#   3. estop_cooldown_sec: 3.0 真机急停后给更多时间让 Aria 驱动响应并稳定
+#   4. rotation_skip_wz_rad: 0.3 与仿真版相同（Nav2 正常转弯过滤阈值）
+#
+# ⚠️  safety_monitor 在真机上直接控制电机，误触发急停会损坏实验进程。
+#     consecutive_frames=5 是比仿真更保守的选择，实验室调试时可根据实际情况调整。
+# TODO: 实验室测试时观察 /part3/safety/estop_event，若误触发过多则提高 consecutive_frames。
+#
+# =============================================================================
+
+# --- C_S.1 SafetyMonitor 参数 ---
+safety_monitor:
+  ros__parameters:
+    # 触发急停的距离门限（米）：与仿真相同，1m 是 PDF 要求的安全距离
+    estop_distance_m: 1.0
+
+    # 相邻帧距离变化超过此值视为"正在靠近"（米）。
+    # SICK TIMS7xx 测距精度 ±30mm，0.10m 阈值比仿真 0.15m 更灵敏但不误报。
+    # TODO: 若户外实测噪声大导致误报，可调高到 0.15m（与仿真版一致）。
+    moving_delta_m: 0.10
+
+    # 需连续几帧满足条件才触发急停（防误报）。
+    # 真机更保守：5 帧（≈500ms@10Hz）过滤 SICK 多路径噪声和行人快速经过。
+    # 仿真版 3 帧已足够（仿真环境无多路径噪声）。
+    consecutive_frames: 5
+
+    # 急停后冷却时间（秒）：真机给 Aria 驱动更多时间响应刹车并稳定。
+    estop_cooldown_sec: 3.0
+
+    # 急停期间持续发零速的频率（Hz）：与仿真相同
+    publish_rate_hz: 10.0
+
+    # 角速度阈值（rad/s）：超过此值时跳过帧间比较，防止转弯扫过墙角误报。
+    # 真机转弯速度上限 wz_max=1.5 rad/s；0.3 rad/s 可过滤正常 Nav2 转弯。
+    rotation_skip_wz_rad: 0.3
+
+# --- C_S.2 RollingRecorder 参数 ---
+rolling_recorder:
+  ros__parameters:
+    # 滚动缓冲窗口（秒）：与仿真相同，保留最近 5s 供急停后回放
+    buffer_duration_sec: 5.0
+    # rosbag 写盘目录（相对于工作目录，即项目根目录）
+    bag_save_dir: artifacts/bags

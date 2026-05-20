@@ -72,6 +72,10 @@ Launch arguments
     use_exploration:=false  use_slam:=false use_rviz:=false use_safety:=false \
         use_camera:=true
 
+TODO: 物理机部署请使用 physical_bringup.launch.py，不要修改本文件。
+      physical_bringup.launch.py 差异：无 Gazebo、use_sim_time=False、
+      底层驱动替换（Aria+SICK+OAK-D）、物理机专用 *_physical.yaml 配置。
+
 """
 
 import os

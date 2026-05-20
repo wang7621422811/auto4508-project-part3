@@ -23,6 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SRC_DIR="$WS_ROOT/src"
 INSTALL_SETUP="$WS_ROOT/install/setup.bash"
+FASTDDS_PROFILE="$WS_ROOT/config/fastdds_no_shm.xml"
 
 # Detect all packages in src/
 PACKAGES=( $(ls "$SRC_DIR") )
@@ -177,6 +178,13 @@ do_run() {
     # Software rendering — required in VM/Parallels to prevent black screen and GPU crashes
     export LIBGL_ALWAYS_SOFTWARE=1
     export QT_OPENGL=software
+    # FastDDS shared-memory transport commonly leaves stale /dev/shm locks in VMs.
+    # Use UDP transport for local ROS discovery to avoid fastrtps_port* lock errors.
+    if [[ -f "$FASTDDS_PROFILE" ]]; then
+        export FASTDDS_DEFAULT_PROFILES_FILE="$FASTDDS_PROFILE"
+        export FASTRTPS_DEFAULT_PROFILES_FILE="$FASTDDS_PROFILE"
+        info "DDS     : FastDDS UDP profile (SHM disabled)"
+    fi
     info "Rendering: LIBGL_ALWAYS_SOFTWARE=1  QT_OPENGL=software"
     echo ""
 
