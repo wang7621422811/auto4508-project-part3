@@ -37,7 +37,7 @@ camera_bringup.launch.py — 感知子系统启动（Member 2 节点）
 启动时序
 ────────
   本文件本身不设 Timer；调用方 sim_bringup 在 t=5s 后才 include 本文件，
-  确保 ros_gz_bridge（2s）和 /camera 图像流已稳定。
+  确保 ros_gz_bridge（2s）和 /camera/image 图像流已稳定。
 
 Launch arguments（由 sim_bringup 透传，也可单独运行时直接传）
 ──────────────────────────────────────────────────────────
@@ -58,7 +58,9 @@ from launch_ros.actions import Node
 _PKG_SHARE    = get_package_share_directory('auto_nav_part3')
 _WS_ROOT      = os.path.normpath(os.path.join(_PKG_SHARE, '..', '..', '..', '..'))
 _PHOTO_DIR    = os.path.join(_WS_ROOT, 'artifacts', 'photos')
-_ARTIFACT_DIR = os.path.join(_WS_ROOT, 'artifacts', 'photos')
+# artifact_dir 必须比 photo_dir 高一级；photo_logger 会在此目录下建 photos/ 子目录。
+# 若两者相同会产生 artifacts/photos/photos/ 双层嵌套。
+_ARTIFACT_DIR = os.path.join(_WS_ROOT, 'artifacts')
 # 模型安装路径：setup.py 将 resource/models/*.onnx 安装到 share/auto_nav_part3/models/
 _GREEK_MODEL  = os.path.join(_PKG_SHARE, 'models', 'greek_letters.onnx')
 
@@ -110,7 +112,7 @@ def generate_launch_description() -> LaunchDescription:
             'greek_model_path':     _GREEK_MODEL,   # share/auto_nav_part3/models/ 下
             'photo_dir':            _PHOTO_DIR,
             'detection_cooldown_s': LaunchConfiguration('detection_cooldown'),
-            'min_confidence':       0.5,            # ONNX 置信度阈值
+            'min_confidence':       0.8,            # ONNX 置信度阈值
             'jpeg_quality':         90,
         }],
         remappings=[('/oak/rgb/image_raw', '/camera/image')],
@@ -134,24 +136,21 @@ def generate_launch_description() -> LaunchDescription:
     # ── perception_adapter（marker 去重 + PoseArray 发布）──────────────────
     # 订阅 /part3/perception/marker_event，维护去重 marker 列表，
     # 发布 /part3/perception/markers (PoseArray)，供 waypoint_service (C_W.1) 消费。
-    # dedup_radius_m：同一位置 0.5m 内的重复检测合并为一条记录。
+    # dedup_radius_m：同一位置 1.0m 内的重复检测合并为一条记录。
+    # waypoints_save_dir：用绝对路径（从 _WS_ROOT 计算），与 CWD 无关。
+    _WAYPOINTS_DIR = os.path.join(_WS_ROOT, 'artifacts', 'waypoints')
     perception_adapter = Node(
         package='auto_nav_part3',
         executable='perception_adapter',
         name='perception_adapter',
         output='screen',
         parameters=[{
-            'use_sim_time':    True,
-            'dedup_radius_m':  0.5,                    # 去重距离阈值
-            'publish_rate_hz': 2.0,                    # PoseArray 定期发布频率
-            'map_frame':       'map',                  # 坐标输出帧
-            'odom_frame':      'odom',                 # 检测器输出坐标所在帧
-            # 深度定位参数（仿真）；//TODO 真机改 depth_topic=/oak/stereo/depth depth_scale=0.001
-            'depth_topic':     '/camera/depth_image',  # rgbd_camera 深度话题
-            'depth_scale':     1.0,                    # Gazebo 已是 float32 m
-            'camera_hfov':     1.089,                  # 与 pioneer URDF 保持一致
-            'image_width':     640,
-            'image_height':    480,
+            'use_sim_time':       True,
+            'dedup_radius_m':     1.0,                    # 去重距离阈值
+            'publish_rate_hz':    2.0,                    # PoseArray 定期发布频率
+            'map_frame':          'map',                  # 坐标输出帧
+            'odom_frame':         'odom',                 # detector 输出坐标帧
+            'waypoints_save_dir': _WAYPOINTS_DIR,         # 绝对路径，与 CWD 无关
         }],
     )
 

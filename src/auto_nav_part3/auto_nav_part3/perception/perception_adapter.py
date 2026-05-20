@@ -4,10 +4,7 @@ perception_adapter.py — 感知结果适配器 (C_P.1)
 职责
 ────
   1. 订阅 /part3/perception/marker_event（String，来自 greek_detector / colour_detector）
-  2. 解析 key=value 格式，优先用深度图 + TF 计算障碍物真实地图坐标：
-       a. marker_event 含 cx_px/cy_px → 从深度帧采样 → 反投影到 cam_optical_link
-          → TF 变换到 map（SLAM 未就绪时退回 odom 帧）
-       b. 无像素坐标 → 退回 robot_position + odom→map 平移
+  2. 解析 key=value 格式，把 detector 发布的 odom 坐标转换到 Nav2 map 坐标
   3. 按 dedup_radius_m 去重：同一位置相同 marker 时更新 confidence，不新增条目
   4. 定期发布 /part3/perception/markers (geometry_msgs/PoseArray, map 帧)
   5. 提供 /part3/perception/get_markers (std_srvs/Trigger) 服务
@@ -16,7 +13,6 @@ perception_adapter.py — 感知结果适配器 (C_P.1)
 ────────────────
   订阅：
     /part3/perception/marker_event  std_msgs/String
-    <depth_topic>                   sensor_msgs/Image  (32FC1 m 或 uint16 mm)
   发布：
     /part3/perception/markers       geometry_msgs/PoseArray
   服务：
@@ -24,44 +20,30 @@ perception_adapter.py — 感知结果适配器 (C_P.1)
 
 参数 (camera_bringup.launch.py)
 ────────────────────────────────
-  dedup_radius_m   float   0.5                     同位置去重半径（m）
+  dedup_radius_m   float   1.0                     同位置去重半径（m）
   publish_rate_hz  float   2.0                     定时发布 PoseArray 频率
   map_frame        str    'map'                    输出坐标帧
-  odom_frame       str    'odom'                   检测器输出坐标所在帧
-  depth_topic      str   '/camera/depth_image'     深度话题（仿真 Gazebo）
-                                                   真机改为 /oak/stereo/depth
-  depth_scale      float  1.0                      深度值倍率：1.0=m（仿真），0.001=mm→m（OAK-D）
-  camera_hfov      float  1.089                    相机水平视角（rad），来自 pioneer URDF
-  image_width      int    640                      图像宽度（px）
-  image_height     int    480                      图像高度（px）
+  odom_frame       str    'odom'                   detector 输出坐标帧
 """
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from typing import Optional
 
-import numpy as np
 import rclpy
-from cv_bridge import CvBridge
-from geometry_msgs.msg import Pose, Point, PoseArray, PointStamped, Quaternion
+from geometry_msgs.msg import Pose, Point, PoseArray, Quaternion
 from rclpy.node import Node
-from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 try:
     from tf2_ros import Buffer, TransformListener
-    from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
-    _TF2_AVAILABLE = True
+    _TF2_OK = True
 except ImportError:
-    _TF2_AVAILABLE = False
-
-try:
-    import tf2_geometry_msgs  # noqa: F401 — 向 tf2 Buffer 注册 PointStamped 变换器
-    _TF2_GEOMETRY_AVAILABLE = True
-except ImportError:
-    _TF2_GEOMETRY_AVAILABLE = False
+    _TF2_OK = False
 
 
 class _MarkerEntry:
@@ -84,39 +66,34 @@ class PerceptionAdapterNode(Node):
         super().__init__('perception_adapter')
 
         # ── 参数 ──────────────────────────────────────────────────────────
-        self.declare_parameter('dedup_radius_m',  0.5)
+        self.declare_parameter('dedup_radius_m',  1.0)
         self.declare_parameter('publish_rate_hz', 2.0)
         self.declare_parameter('map_frame',       'map')
         self.declare_parameter('odom_frame',      'odom')
-        self.declare_parameter('depth_topic',     '/camera/depth_image')
-        self.declare_parameter('depth_scale',     1.0)
-        self.declare_parameter('camera_hfov',     1.089)
-        self.declare_parameter('image_width',     640)
-        self.declare_parameter('image_height',    480)
+        # 持久化路径：markers.json 保存到此目录，节点重启后自动恢复
+        self.declare_parameter('waypoints_save_dir', 'artifacts/waypoints')
 
         gp = self.get_parameter
         self._dedup_r     = gp('dedup_radius_m').get_parameter_value().double_value
         self._rate        = gp('publish_rate_hz').get_parameter_value().double_value
         self._map_frame   = gp('map_frame').get_parameter_value().string_value
         self._odom_frame  = gp('odom_frame').get_parameter_value().string_value
-        self._depth_topic = gp('depth_topic').get_parameter_value().string_value
-        self._depth_scale = gp('depth_scale').get_parameter_value().double_value
-        self._cam_hfov    = gp('camera_hfov').get_parameter_value().double_value
-        self._img_w       = gp('image_width').get_parameter_value().integer_value
-        self._img_h       = gp('image_height').get_parameter_value().integer_value
+        _save_dir         = gp('waypoints_save_dir').get_parameter_value().string_value
+        os.makedirs(_save_dir, exist_ok=True)
+        self._markers_json_path = os.path.join(_save_dir, 'markers.json')
 
-        # ── TF ────────────────────────────────────────────────────────────
-        if _TF2_AVAILABLE:
-            self._tf_buffer   = Buffer()
+        if _TF2_OK:
+            self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
         else:
             self._tf_buffer = None
-            self.get_logger().warn('tf2_ros 不可用，将直接使用 odom 坐标')
+            self.get_logger().warn('tf2 不可用，无法把 marker 坐标转换到 map')
 
         # ── 状态 ──────────────────────────────────────────────────────────
         self._markers: list[_MarkerEntry] = []
-        self._depth_frame: Optional[np.ndarray] = None  # float32, 单位 m
-        self._bridge = CvBridge()
+
+        # 启动时从文件恢复上次探索的 marker（节点重启后第二趟仍可用）
+        self._load_markers()
 
         # ── 订阅 ──────────────────────────────────────────────────────────
         self.create_subscription(
@@ -125,15 +102,12 @@ class PerceptionAdapterNode(Node):
             self._on_marker_event,
             10,
         )
-        self.create_subscription(
-            Image,
-            self._depth_topic,
-            self._on_depth,
-            10,
-        )
 
         # ── 发布 ──────────────────────────────────────────────────────────
+        # 全部 marker（greek_letter + colour_obstacle）
         self._pub = self.create_publisher(PoseArray, '/part3/perception/markers', 10)
+        # 仅希腊字母 marker，供 waypoint_service 直接读取（无需二次过滤）
+        self._greek_pub = self.create_publisher(PoseArray, '/part3/perception/greek_markers', 10)
 
         # ── 服务 ──────────────────────────────────────────────────────────
         self.create_service(
@@ -147,26 +121,9 @@ class PerceptionAdapterNode(Node):
 
         self.get_logger().info(
             f'PerceptionAdapter 就绪  dedup={self._dedup_r}m  '
-            f'frame={self._map_frame}  rate={self._rate}Hz  '
-            f'depth_topic={self._depth_topic}  depth_scale={self._depth_scale}'
+            f'frame={self._map_frame}  odom_frame={self._odom_frame}  rate={self._rate}Hz  '
+            f'json={self._markers_json_path}'
         )
-
-    # ════════════════════════════════════════════════════════════════════
-    # 深度回调
-    # ════════════════════════════════════════════════════════════════════
-
-    def _on_depth(self, msg: Image) -> None:
-        """缓存最新深度帧（统一转换为 float32，单位 m）。"""
-        try:
-            raw = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            if raw.dtype == np.float32:
-                self._depth_frame = raw.copy()
-            else:
-                # uint16 mm (OAK-D) → float32 m
-                self._depth_frame = raw.astype(np.float32) * self._depth_scale
-        except Exception as exc:
-            self.get_logger().warn(
-                f'深度图解码失败: {exc}', throttle_duration_sec=5.0)
 
     # ════════════════════════════════════════════════════════════════════
     # 事件处理
@@ -181,22 +138,21 @@ class PerceptionAdapterNode(Node):
             )
             return
 
-        ox, oy = fields['x'], fields['y']  # 机器人位置（odom 帧，兜底用）
-
-        # 优先使用深度图 + TF 计算障碍物真实坐标
-        mx, my = None, None
-        if 'cx_px' in fields and 'cy_px' in fields:
-            mx, my = self._depth_to_map(int(fields['cx_px']), int(fields['cy_px']))
-
-        if mx is None:
-            # 深度不可用 — 退回机器人 odom 坐标 + odom→map 平移
-            mx, my = self._transform_to_map(ox, oy)
+        marker_frame = fields.get('frame', self._odom_frame)
+        map_xy = self._to_map(fields['x'], fields['y'], marker_frame)
+        if map_xy is None:
+            self.get_logger().warn(
+                f"marker_event 无法转换到 {self._map_frame}，跳过: {msg.data}",
+                throttle_duration_sec=5.0,
+            )
+            return
+        mx, my = map_xy
 
         self._upsert(fields['type'], fields['label'], mx, my, fields['confidence'])
 
         self.get_logger().info(
             f"[ADAPTER] {fields['type']} {fields['label']} "
-            f"robot=({ox:.2f},{oy:.2f}) map=({mx:.2f},{my:.2f}) "
+            f"{marker_frame}->{self._map_frame} pos=({mx:.2f},{my:.2f}) "
             f"conf={fields['confidence']:.2f}  total={len(self._markers)}"
         )
 
@@ -211,52 +167,6 @@ class PerceptionAdapterNode(Node):
     # 核心逻辑
     # ════════════════════════════════════════════════════════════════════
 
-    def _depth_to_map(self, cx_px: int, cy_px: int) -> tuple[float, float] | None:
-        """
-        从深度帧采样障碍物深度，反投影到 cam_optical_link 帧，再经 TF 变换到
-        map（或 odom）帧，得到障碍物的世界坐标。
-        深度无效或 TF 不可用时返回 None，调用方退回机器人位置。
-        """
-        if self._depth_frame is None or self._tf_buffer is None:
-            return None
-        if not _TF2_GEOMETRY_AVAILABLE:
-            return None
-
-        h, w = self._depth_frame.shape[:2]
-        cx_px = max(1, min(cx_px, w - 2))
-        cy_px = max(1, min(cy_px, h - 2))
-
-        # 3×3 邻域均值，降低深度噪声影响
-        patch   = self._depth_frame[cy_px - 1:cy_px + 2, cx_px - 1:cx_px + 2]
-        depth_m = float(np.nanmean(patch))
-        if not (0.1 < depth_m < 15.0) or math.isnan(depth_m):
-            return None
-
-        # 反投影：像素 → cam_optical_link 帧（Z-forward 光学坐标约定）
-        fx    = (w / 2.0) / math.tan(self._cam_hfov / 2.0)
-        x_opt = (cx_px - w / 2.0) * depth_m / fx
-        y_opt = (cy_px - h / 2.0) * depth_m / fx  # 假设等焦距（方形像素）
-        z_opt = depth_m
-
-        pt = PointStamped()
-        pt.header.frame_id = 'cam_optical_link'
-        pt.header.stamp    = rclpy.time.Time().to_msg()  # 请求最新可用变换
-        pt.point.x = x_opt
-        pt.point.y = y_opt
-        pt.point.z = z_opt
-
-        # 优先变换到 map 帧；SLAM 未就绪时退回 odom 帧
-        for target in (self._map_frame, self._odom_frame):
-            try:
-                pt_out = self._tf_buffer.transform(
-                    pt, target,
-                    timeout=rclpy.duration.Duration(seconds=0.1),
-                )
-                return pt_out.point.x, pt_out.point.y
-            except Exception:
-                continue
-        return None
-
     def _upsert(
         self,
         marker_type: str,
@@ -264,51 +174,89 @@ class PerceptionAdapterNode(Node):
         x: float,
         y: float,
         confidence: float,
+        count: int = 1,
+        save: bool = True,
     ) -> None:
         """去重插入：同类 marker 在 dedup_radius_m 内则加权平均更新，否则新增。"""
         for entry in self._markers:
             if entry.marker_type != marker_type or entry.label != label:
                 continue
             dist = math.hypot(entry.x - x, entry.y - y)
-            if dist < self._dedup_r:
+            if dist <= self._dedup_r:
                 w = entry.count
-                entry.x          = (entry.x * w + x) / (w + 1)
-                entry.y          = (entry.y * w + y) / (w + 1)
+                new_count        = max(1, int(count))
+                entry.x          = (entry.x * w + x * new_count) / (w + new_count)
+                entry.y          = (entry.y * w + y * new_count) / (w + new_count)
                 entry.confidence = max(entry.confidence, confidence)
-                entry.count     += 1
+                entry.count     += new_count
+                if save:
+                    self._save_markers()
                 return
         self._markers.append(_MarkerEntry(marker_type, label, x, y, confidence))
+        self._markers[-1].count = max(1, int(count))
+        if save:
+            self._save_markers()
 
-    def _transform_to_map(self, ox: float, oy: float) -> tuple[float, float]:
-        """把 odom 帧 (ox, oy) 平移到 map 帧。TF 不可用时原样返回。"""
+    def _to_map(self, x: float, y: float, frame: str) -> Optional[tuple[float, float]]:
+        """把 detector 坐标转换成 Nav2 使用的 map 坐标。"""
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        if frame == self._map_frame:
+            return x, y
         if self._tf_buffer is None:
-            return ox, oy
+            return None
+
         try:
-            t = self._tf_buffer.lookup_transform(
+            transform = self._tf_buffer.lookup_transform(
                 self._map_frame,
-                self._odom_frame,
+                frame,
                 rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=0.1),
+                timeout=rclpy.duration.Duration(seconds=0.2),
             )
-            tx = t.transform.translation.x
-            ty = t.transform.translation.y
-            return ox + tx, oy + ty
-        except (LookupException, ConnectivityException, ExtrapolationException):
-            return ox, oy
+            t = transform.transform.translation
+            q = transform.transform.rotation
+            yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
+            cos_yaw = math.cos(yaw)
+            sin_yaw = math.sin(yaw)
+            return (
+                t.x + x * cos_yaw - y * sin_yaw,
+                t.y + x * sin_yaw + y * cos_yaw,
+            )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'TF {frame}->{self._map_frame} 转换失败: {exc}',
+                throttle_duration_sec=5.0,
+            )
+            return None
 
     def _publish_markers(self) -> None:
-        """定时将去重 marker 列表发布为 PoseArray（map 帧）。"""
-        msg = PoseArray()
-        msg.header.stamp    = self.get_clock().now().to_msg()
-        msg.header.frame_id = self._map_frame
+        """定时将去重 marker 列表发布为 PoseArray（map 帧）。
+        同时向 /part3/perception/greek_markers 单独发布希腊字母 marker，
+        供 waypoint_service 直接消费，无需在下游再做 type 过滤。
+        """
+        now = self.get_clock().now().to_msg()
+
+        all_msg = PoseArray()
+        all_msg.header.stamp    = now
+        all_msg.header.frame_id = self._map_frame
+
+        greek_msg = PoseArray()
+        greek_msg.header.stamp    = now
+        greek_msg.header.frame_id = self._map_frame
 
         for entry in self._markers:
             pose = Pose()
             pose.position    = Point(x=entry.x, y=entry.y, z=0.0)
             pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-            msg.poses.append(pose)
+            all_msg.poses.append(pose)
+            if entry.marker_type == 'greek':
+                greek_msg.poses.append(pose)
 
-        self._pub.publish(msg)
+        self._pub.publish(all_msg)
+        self._greek_pub.publish(greek_msg)
 
     # ════════════════════════════════════════════════════════════════════
     # 工具
@@ -331,6 +279,7 @@ class PerceptionAdapterNode(Node):
             result: dict = {
                 'type':       fields['type'],
                 'label':      fields['label'],
+                'frame':      fields.get('frame', 'odom'),
                 'x':          float(fields['x']),
                 'y':          float(fields['y']),
                 'confidence': float(fields['confidence']),
@@ -343,6 +292,64 @@ class PerceptionAdapterNode(Node):
             return result
         except ValueError:
             return None
+
+    # ════════════════════════════════════════════════════════════════════
+    # 持久化（JSON 文件）
+    # ════════════════════════════════════════════════════════════════════
+
+    def _save_markers(self) -> None:
+        """把当前 _markers 列表序列化到 markers.json，写失败只打 warn 不崩溃。"""
+        try:
+            data = [
+                {
+                    'type':       e.marker_type,
+                    'label':      e.label,
+                    'frame':      self._map_frame,
+                    'x':          round(e.x, 4),
+                    'y':          round(e.y, 4),
+                    'confidence': round(e.confidence, 4),
+                    'count':      e.count,
+                }
+                for e in self._markers
+            ]
+            with open(self._markers_json_path, 'w', encoding='utf-8') as fh:
+                json.dump(data, fh, indent=2, ensure_ascii=False)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[PerceptionAdapter] markers.json 写入失败: {exc}',
+                throttle_duration_sec=10.0,
+            )
+
+    def _load_markers(self) -> None:
+        """启动时从 markers.json 恢复上次探索的 marker 列表。"""
+        if not os.path.exists(self._markers_json_path):
+            return
+        try:
+            with open(self._markers_json_path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            raw_count = 0
+            for item in data:
+                raw_count += 1
+                self._upsert(
+                    marker_type=item['type'],
+                    label=item['label'],
+                    x=float(item['x']),
+                    y=float(item['y']),
+                    confidence=float(item['confidence']),
+                    count=int(item.get('count', 1)),
+                    save=False,
+                )
+            if raw_count != len(self._markers):
+                self._save_markers()
+            self.get_logger().info(
+                f'[PerceptionAdapter] 从文件恢复 {len(self._markers)} 个 marker '
+                f'（原始 {raw_count} 条，已去重）: '
+                f'{self._markers_json_path}'
+            )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[PerceptionAdapter] markers.json 加载失败（将从空列表开始）: {exc}'
+            )
 
     def get_markers_list(self) -> list[_MarkerEntry]:
         """供外部代码直接读取当前 marker 列表（单测用）。"""

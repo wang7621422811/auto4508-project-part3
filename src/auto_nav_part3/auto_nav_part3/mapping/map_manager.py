@@ -64,6 +64,12 @@ from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+try:
+    from slam_toolbox.srv import SerializePoseGraph as _SerializePoseGraph
+    _HAS_SLAM_SERIALIZE = True
+except ImportError:
+    _HAS_SLAM_SERIALIZE = False
+
 
 # /map 话题的 QoS：与 slam_toolbox 发布端保持一致，否则 ROS2 静默不连接。
 # slam_toolbox 用 TRANSIENT_LOCAL（锁存）发布 /map，订阅端必须同样用 TRANSIENT_LOCAL。
@@ -170,6 +176,17 @@ class MapManager(Node):
             '/part3/mapping/save_map',
             self._on_save_map_service,
         )
+
+        # ── slam_toolbox 位姿图序列化客户端（Phase 2 localization 复用）────────
+        # 保存 pgm 后同步序列化位姿图（.posegraph + .data），
+        # 供 use_localization:=true 启动时由 slam_toolbox localization 模式加载。
+        # slam_toolbox 包不可用时静默跳过（不影响正常建图功能）。
+        self._slam_serialize_cli = None
+        if _HAS_SLAM_SERIALIZE:
+            self._slam_serialize_cli = self.create_client(
+                _SerializePoseGraph,
+                '/slam_toolbox/serialize_map',
+            )
 
         self.get_logger().info(
             f'[MapManager] 就绪 | '
@@ -329,6 +346,16 @@ class MapManager(Node):
             return False, msg
 
         self.get_logger().info(f'[MapManager] PGM/YAML 已写出: {pgm_path}')
+
+        # ── 步骤 3b：序列化 slam_toolbox 位姿图（供 Phase 2 加载）─────────────
+        # 在后台线程调用，不阻塞当前 save 流程或服务回调。
+        # 输出：<base_path>.posegraph + <base_path>.data
+        threading.Thread(
+            target=self._serialize_pose_graph,
+            args=(base_path,),
+            name='slam_serialize',
+            daemon=True,
+        ).start()
 
         # ── 步骤 4：pgm → png ─────────────────────────────────────────────────
         # PNG 转换失败不影响主要功能（pgm + yaml 已保存），只记录警告
@@ -560,6 +587,64 @@ class MapManager(Node):
             fh.write(png_bytes)
 
         return True
+
+    # =========================================================================
+    # 工具方法
+    # =========================================================================
+
+    # =========================================================================
+    # slam_toolbox 位姿图序列化（Phase 2 localization 模式支持）
+    # =========================================================================
+
+    def _serialize_pose_graph(self, path_no_ext: str) -> None:
+        """调用 /slam_toolbox/serialize_map，把当前位姿图写到磁盘。
+        输出文件：<path_no_ext>.posegraph + <path_no_ext>.data
+        Phase 2 用 use_localization:=true 启动时由 slam_toolbox localization 模式加载。
+
+        在独立线程中调用（不阻塞 ROS2 spin 或 save 流程）。
+        event-based 等待：main 线程继续 spin，响应回调后唤醒本线程。
+        """
+        if self._slam_serialize_cli is None:
+            self.get_logger().warn(
+                '[MapManager] slam_toolbox Python 包不可用，跳过位姿图序列化'
+            )
+            return
+
+        if not self._slam_serialize_cli.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                '[MapManager] /slam_toolbox/serialize_map 服务不可用，跳过序列化。'
+                '（如需 Phase 2 localization 重新加载，请确保 slam_toolbox 在线）'
+            )
+            return
+
+        req = _SerializePoseGraph.Request()
+        req.filename = path_no_ext   # slam_toolbox 自动附加 .posegraph / .data
+
+        done_event: threading.Event = threading.Event()
+        result_box: list = [None]
+
+        def _done(future):
+            result_box[0] = future.result()
+            done_event.set()
+
+        future = self._slam_serialize_cli.call_async(req)
+        future.add_done_callback(_done)
+
+        if not done_event.wait(timeout=10.0):
+            self.get_logger().warn('[MapManager] 位姿图序列化超时（10s）')
+            return
+
+        result = result_box[0]
+        if result is not None and result.result:
+            self.get_logger().info(
+                f'[MapManager] 位姿图已保存: {path_no_ext}.posegraph\n'
+                '  → Phase 2 可用 use_localization:=true 直接加载，无需重新建图'
+            )
+        else:
+            self.get_logger().warn(
+                '[MapManager] 位姿图序列化失败（slam_toolbox 返回 false），'
+                'Phase 2 localization 将不可用'
+            )
 
     # =========================================================================
     # 工具方法

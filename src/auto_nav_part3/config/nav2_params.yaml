@@ -142,7 +142,9 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
+        # 从 5.0 提高到 10.0：加大向前偏好，MPPI 采样倒车轨迹的 cost 翻倍，
+        # 显著减少探索过程中出现的不必要倒车行为。
+        cost_weight: 10.0
         threshold_to_consider: 0.5
       CostCritic:
         enabled: true

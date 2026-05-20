@@ -65,8 +65,13 @@ Launch arguments
   gz_verbose    0-4          Gz server verbosity        (default: 3)
 
 
-./scripts/launch.sh start --clean sim_bringup use_nav2:=true use_exploration:=true \
-      use_slam:=true use_rviz:=true use_safety:=true
+./scripts/launch.sh start --clean sim_bringup use_nav2:=true \
+    use_exploration:=true  use_slam:=true use_rviz:=true use_safety:=true use_camera:=true
+
+./scripts/launch.sh start --clean sim_bringup use_nav2:=false \
+    use_exploration:=false  use_slam:=false use_rviz:=false use_safety:=false \
+        use_camera:=true
+
 
 """
 
@@ -89,6 +94,7 @@ from launch.substitutions import (
     Command,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -143,6 +149,8 @@ def _make_spawn_action(context, spawn_x, spawn_y, spawn_z):
 def generate_launch_description():
     # ── 包路径 (Package paths) ───────────────────────────────────────────────
     pkg = get_package_share_directory('auto_nav_part3')
+    # workspace 根目录：install/auto_nav_part3/share/auto_nav_part3 上溯 4 层
+    _WS_ROOT = os.path.normpath(os.path.join(pkg, '..', '..', '..', '..'))
 
     default_world  = os.path.join(pkg, 'simulation', 'worlds', 'discovery_15x15.sdf')
     simulation_dir = os.path.join(pkg, 'simulation')   # contains meshes/
@@ -154,6 +162,10 @@ def generate_launch_description():
     nav2_launch_path = os.path.join(pkg, 'launch', 'nav2_bringup.launch.py')
     # 感知子系统 launch 文件路径（Member 2: colour_detector / greek_detector / photo_logger）
     camera_bringup_launch_path = os.path.join(pkg, 'launch', 'camera_bringup.launch.py')
+    # SLAM localization 模式配置（Phase 2：加载已建位姿图，不重新建图）
+    slam_localization_config_path = os.path.join(pkg, 'config', 'slam_toolbox_localization.yaml')
+    # 位姿图绝对路径（不含扩展名；slam_toolbox 自动附加 .posegraph / .data）
+    _POSEGRAPH_PATH = os.path.join(_WS_ROOT, 'artifacts', 'maps', 'discovery_map')
 
     # robot_description: same pattern as part3_minimal.launch.py (Command + cat)
     # so that FindPackageShare resolves at runtime, not import time.
@@ -213,16 +225,24 @@ def generate_launch_description():
                         '录制关键话题（/scan /odometry/filtered /tf /tf_static /cmd_vel /map 等），'
                         '不录 /camera（体积过大）。',
         ),
+        DeclareLaunchArgument(
+            'use_localization', default_value='false',
+            description='Phase 2 重复导航模式：加载 artifacts/maps/discovery_map.posegraph，'
+                        '以 slam_toolbox localization 模式定位，不重新建图。'
+                        '使用前提：Phase 1 建图已完成且 map_manager 已序列化位姿图。'
+                        '与 use_slam=true 互斥；启用时自动跳过 use_slam/use_exploration 节点。',
+        ),
     ]
 
-    use_gz_gui    = LaunchConfiguration('use_gz_gui')
-    use_rviz      = LaunchConfiguration('use_rviz')
-    use_slam      = LaunchConfiguration('use_slam')
-    use_nav2      = LaunchConfiguration('use_nav2')
+    use_gz_gui      = LaunchConfiguration('use_gz_gui')
+    use_rviz        = LaunchConfiguration('use_rviz')
+    use_slam        = LaunchConfiguration('use_slam')
+    use_nav2        = LaunchConfiguration('use_nav2')
     use_exploration = LaunchConfiguration('use_exploration')
-    use_camera    = LaunchConfiguration('use_camera')
-    use_safety    = LaunchConfiguration('use_safety')
-    use_recording = LaunchConfiguration('use_recording')
+    use_camera      = LaunchConfiguration('use_camera')
+    use_safety      = LaunchConfiguration('use_safety')
+    use_recording   = LaunchConfiguration('use_recording')
+    use_localization = LaunchConfiguration('use_localization')
     world      = LaunchConfiguration('world')
     spawn_x    = LaunchConfiguration('x')
     spawn_y    = LaunchConfiguration('y')
@@ -414,7 +434,7 @@ def generate_launch_description():
     #     原因：TimerAction 回调中 LaunchConfiguration 的 context 求值顺序
     #     与 launch 主流程不同，Node 上的 IfCondition 会静默失败（节点不启动）。
     slam_node = TimerAction(
-        condition=IfCondition(use_slam),   # 控制整个定时器是否触发
+        condition=IfCondition(PythonExpression(["'", use_slam, "' == 'true' and '", use_localization, "' != 'true'"])),
         period=10.0,
         actions=[
             Node(
@@ -433,7 +453,7 @@ def generate_launch_description():
     # 用单个 bash 进程串行执行，避免两个独立 ExecuteProcess 因子进程 DDS 发现
     # 竞态而失败。重试循环（最多 30×0.5s = 15s）等待 /slam_toolbox 进入 ROS 图。
     slam_lifecycle = TimerAction(
-        condition=IfCondition(use_slam),
+        condition=IfCondition(PythonExpression(["'", use_slam, "' == 'true' and '", use_localization, "' != 'true'"])),
         period=10.5,   # slam_toolbox 启动（10s）后 0.5s 开始尝试
         actions=[
             ExecuteProcess(
@@ -453,6 +473,56 @@ def generate_launch_description():
                 ],
                 output='screen',
                 name='slam_lifecycle',
+            ),
+        ],
+    )
+
+    # ── 7b. slam_toolbox localization 模式（Phase 2 重复导航）─────────────────
+    # use_localization=true 时启动，与 use_slam=true 的建图模式互斥。
+    # 加载 artifacts/maps/discovery_map.posegraph（Phase 1 map_manager 序列化），
+    # 发布相同的 /map（静止，不更新）和 map→odom TF，供 Nav2 使用。
+    slam_localization_node = TimerAction(
+        condition=IfCondition(use_localization),
+        period=10.0,
+        actions=[
+            Node(
+                package='slam_toolbox',
+                executable='async_slam_toolbox_node',
+                name='slam_toolbox',
+                output='screen',
+                parameters=[
+                    slam_localization_config_path,
+                    {
+                        'use_sim_time': True,
+                        # 注入绝对路径（不含扩展名），slam_toolbox 加 .posegraph/.data
+                        'map_file_name': _POSEGRAPH_PATH,
+                    },
+                ],
+            ),
+        ],
+    )
+
+    # slam_toolbox localization 的生命周期激活（与建图模式相同的 configure+activate 流程）
+    slam_localization_lifecycle = TimerAction(
+        condition=IfCondition(use_localization),
+        period=10.5,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    'i=0; '
+                    'until ros2 lifecycle set /slam_toolbox configure 2>/dev/null; do '
+                    '  i=$((i+1)); '
+                    '  [ $i -ge 30 ] && echo "[slam_localization_lifecycle] timeout" && exit 1; '
+                    '  sleep 0.5; '
+                    'done && '
+                    'echo "[slam_localization_lifecycle] configure OK" && '
+                    'sleep 0.5 && '
+                    'ros2 lifecycle set /slam_toolbox activate && '
+                    'echo "[slam_localization_lifecycle] activate OK"',
+                ],
+                output='screen',
+                name='slam_localization_lifecycle',
             ),
         ],
     )
@@ -634,6 +704,23 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
+    # ── M_W. waypoint_service（C_W.1）─────────────────────────────────────────
+    # 路点快速驾驶服务：提供 /part3/waypoint/start 服务（与 mapping_service 同样无条件启动）。
+    # waypoints_file 注入绝对路径，优先从 artifacts/waypoints/markers.json 加载路点，
+    # 无需感知节点在线；文件缺失则退回 /part3/perception/greek_markers 话题。
+    waypoint_config_path = os.path.join(pkg, 'config', 'waypoint.yaml')
+    _MARKERS_JSON = os.path.join(_WS_ROOT, 'artifacts', 'waypoints', 'markers.json')
+    waypoint_service_node = Node(
+        package='auto_nav_part3',
+        executable='waypoint_service',
+        name='part3_waypoint_service',
+        output='screen',
+        parameters=[waypoint_config_path, {
+            'use_sim_time': True,
+            'waypoints_file': _MARKERS_JSON,   # 绝对路径，第二趟直接读 JSON，无需感知节点
+        }],
+    )
+
     # ── 7. RViz2 (optional) ─────────────────────────────────────────────────
     rviz2 = Node(
         condition=IfCondition(use_rviz),
@@ -656,8 +743,10 @@ def generate_launch_description():
         camera_info_publisher,  # 4a. CameraInfo 标定发布器（2.5 s 后）
         spawn_robot,            # 5. 生成机器人（4 s 后）
         ekf_node,               # 6. EKF 融合定位，发布 odom→base_link TF（3 s 后）
-        slam_node,              # 7.  SLAM 节点（10s 后，unconfigured 状态）
-        slam_lifecycle,         # 7a. configure+activate 重试循环（10.5s 后开始）
+        slam_node,                   # 7.  SLAM 建图节点（10s 后，use_slam:=true 时启用）
+        slam_lifecycle,              # 7a. configure+activate 重试循环（10.5s 后开始）
+        slam_localization_node,      # 7b. SLAM 定位节点（10s 后，use_localization:=true 时启用）
+        slam_localization_lifecycle, # 7c. 定位模式 configure+activate（10.5s 后）
         nav2_node,              # M3. Nav2 导航栈（15s 后，use_nav2:=true 时启用）
         exploration_node,       # M4. Frontier 探索（45s 后，use_exploration:=true 时启用）
         map_manager_node,       # M4. 地图保存管理器（45s 后，随 exploration 一起启动）
@@ -666,6 +755,7 @@ def generate_launch_description():
         rolling_recorder_node,   # C_S.2. 5s 滚动录包，急停时写盘（use_safety:=true 时启用）
         session_recorder,        # C_S.3. 全程录包，保存到 artifacts/bags/session_<ts>/（use_recording:=true 时启用）
         mapping_service_node,   # M5. 编排服务，提供 /part3/mapping/start
+        waypoint_service_node,  # M_W. 路点驾驶服务，提供 /part3/waypoint/start
         camera_node,            # M_P. 感知节点（5s 后，use_camera:=true 时启用）
         rviz2,                  # 8.  可视化
     ])

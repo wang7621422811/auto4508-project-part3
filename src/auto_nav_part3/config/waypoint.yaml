@@ -1,0 +1,46 @@
+# =============================================================================
+# waypoint.yaml — M_W 路点快速驾驶服务配置 (C_W.1)
+# =============================================================================
+#
+# 两阶段分离：
+#   第一阶段（建图）：use_exploration:=true  use_waypoint:=false
+#   第二阶段（导航）：use_exploration:=false  use_waypoint:=true
+#
+# 参数说明：
+#   home_x/home_y        机器人 spawn 位置（map 帧），第二趟结束后返回此点
+#   nav_timeout_sec      整趟 NavigateThroughPoses 的超时上限
+#   marker_wait_sec      waypoints_file 为空时，等待 greek_markers 话题的最长时间
+#   waypoints_file       【第一优先】直接读此 JSON 文件加载路点，第二趟无需感知节点在线。
+#                        为空字符串时退回 /part3/perception/greek_markers 话题。
+#                        launch 文件会把绝对路径注入此参数，无需手动改。
+# =============================================================================
+
+waypoint_service:
+  ros__parameters:
+    # home_coordinate: 字符串，格式 "x,y"（例如 "-3.0,0.0"）
+    #   非空 → 直接解析为固定 home 坐标（适合 spawn 位置已知的情况）
+    #   空字符串 "" → 服务触发时从 /odometry/filtered 捕获机器人当前位置作为 home
+    # 仿真 spawn 默认位置 (-3.0, 0.0)，若使用固定点可填入；留空可自动定位当前点
+    home_coordinate: ""
+
+    # marker_types: 控制从 waypoints_file（JSON）加载哪些类型的路点
+    #   "all"    → 加载所有含 x/y 字段的条目（colour + greek）
+    #   "greek"  → 只加载 type=greek 的条目
+    #   "colour" → 只加载 type=colour 的条目
+    marker_types: "all"
+
+    # approach_dist: 在每个 marker 前方停车的距离（米）
+    #   Nav2 goal 设为 marker 前方此距离处，避开 costmap 把 marker 本身标记为障碍的区域
+    #   必须 > inflation_radius（当前 0.55m），建议 ≥ 0.8m 留出安全余量
+    #   设为 0.0 则直接导航到 marker 坐标（如已知坐标在可行区域内可使用）
+    approach_dist: 0.8
+
+    # NavigateThroughPoses action 总超时（秒）
+    nav_timeout_sec: 120.0
+
+    # waypoints_file 为空时，调用 start service 等待话题的最长秒数
+    marker_wait_sec: 3.0
+
+    # 第一优先路点来源：直接读 markers.json（launch 文件注入绝对路径）
+    # 为空字符串时退回 /part3/perception/greek_markers 话题
+    waypoints_file: ""

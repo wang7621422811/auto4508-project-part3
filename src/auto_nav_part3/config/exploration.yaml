@@ -11,7 +11,8 @@
 #
 # 覆盖率说明：
 #   coverage = free_cells / (free_cells + unknown_cells)
-#   仅在 home 周围 search_area_size×search_area_size 方形区域内统计。
+#   仅在 home 周围 coverage_area_size×coverage_area_size 方形区域内统计。
+#   frontier 搜索使用更大的 search_area_size（17m）以保留边界 frontier。
 #   覆盖率 ≥ coverage_done_threshold 时探索自动停止。
 #
 # Frontier 过滤链（依次执行）：
@@ -40,10 +41,14 @@ exploration_node:
     home_y: 0.0
 
     # ── 探索区域 ─────────────────────────────────────────────────────────────
-    # 以 home 为中心的正方形区域边长（m）。
-    # arena 为 15×15m，扩到 17m 给边界 frontier 留 1m 余量，
-    # 避免 arena 边缘的 frontier 质心因浮点对齐恰好被过滤。
+    # frontier 搜索边界：以 home 为中心的正方形区域边长（m）。
+    # 17m 给边界 frontier 质心留 1m 余量，避免 arena 边缘 frontier 被过滤。
     search_area_size: 17.0
+
+    # 覆盖率统计区域边长（m）。必须 ≤ arena 实际边长（15m）。
+    # 不能与 search_area_size 共用：17m box 包含墙外永久 unknown 格子，
+    # 导致分母虚高，coverage 数学上无法达到 90%（实测最高约 75%）。
+    coverage_area_size: 15.0
 
     # ── Frontier 过滤 ────────────────────────────────────────────────────────────────────
     # frontier 聚类最小格子数（cell）。
@@ -57,14 +62,14 @@ exploration_node:
     # 探索区域内 free/(free+unknown) ≥ 此值时停止。
     # 0.90 = 90% 格子已变为 free（探索了九成区域）。
     # 完美覆盖在实践中很难，90% 通常意味着可通行区域全部覆盖。
-    coverage_done_threshold: 0.90
+    coverage_done_threshold: 0.70
 
     # ── 导航参数 ─────────────────────────────────────────────────────────────
     # 单次 Nav2 导航超时（秒）。
     # 超过此时间仍未到达目标 → 认为卡住，放弃当前目标，换下一个 frontier。
-    # 45s：Pioneer 3-AT 在 15×15m 场地内最长路径约 20m，0.7m/s 跑 28s 足够，
-    # 45s 留出避障绕路余量。
-    nav_timeout_sec: 45.0
+    # 20s：Pioneer 以 1.5m/s 跑 arena 对角线 21m 仅需 14s，20s 含绕路余量。
+    # 原 45s 使每次真正卡住都浪费约 30s，整体建图时间显著延长。
+    nav_timeout_sec: 20.0
 
     # 导航失败/超时后，在目标附近此半径内（m）的 frontier 也跳过。
     # 0.5m：缩小到仅屏蔽真正失败的目标点，允许同一 frontier 集群中
@@ -73,7 +78,16 @@ exploration_node:
     frontier_blacklist_radius: 0.5
 
     # ── 主循环频率 ────────────────────────────────────────────────────────────
-    # 每秒几次检查地图、提取 frontier、做决策。
-    # 1.0 Hz 足够：frontier 提取在 300×300 地图上约 10ms，决策代价低。
-    # 提高到 2.0 可以更快响应地图变化，但 CPU 占用加倍。
     loop_rate_hz: 1.0
+
+    # ── 参考代码移植参数 ──────────────────────────────────────────────────────
+    # preprocessMap 迭代次数：参考代码用 5，填充孤立 unknown 小孔。
+    preprocess_iters: 5
+
+    # 可达性检查最多尝试候选数：参考代码尝试 rank 0→3，共 4 个。
+    # 每次检查调一次 ComputePathToPose（约 100ms），3 个候选最多 300ms。
+    top_n_candidates: 3
+
+    # selectFrontier 评分权重：score = alpha*(1/dist) + (1-alpha)*size
+    # 参考代码 alpha=0.99：极度偏近，避免机器人舍近求远追大 frontier。
+    alpha: 0.99

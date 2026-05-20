@@ -23,6 +23,11 @@ frames_**
 
 **.log
 
-./artifacts/bags
-./artifacts/maps
-./artifacts/**
+
+./artifacts/maps/
+artifacts/bags/
+artifacts/photos/
+artifacts/waypoints/
+mainifest.csv
+
+another_project_reference/

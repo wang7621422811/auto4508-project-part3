@@ -28,10 +28,10 @@ import rosbag2_py
 
 
 # 话题名 → (ROS2 类型字符串, 消息类) 映射
-# 只缓存对事故回放最有价值的话题；/camera 数据量大，如内存受限可注释掉
+# 只缓存对事故回放最有价值的话题；/camera/image 数据量大，如内存受限可注释掉
 _RECORD_TOPICS: dict[str, tuple[str, type]] = {
     '/scan':                     ('sensor_msgs/msg/LaserScan', LaserScan),
-    '/camera':                   ('sensor_msgs/msg/Image',     Image),
+    '/camera/image':             ('sensor_msgs/msg/Image',     Image),
     '/odometry/filtered':        ('nav_msgs/msg/Odometry',     Odometry),
     '/tf':                       ('tf2_msgs/msg/TFMessage',    TFMessage),
     '/part3/system/state':       ('std_msgs/msg/String',       String),

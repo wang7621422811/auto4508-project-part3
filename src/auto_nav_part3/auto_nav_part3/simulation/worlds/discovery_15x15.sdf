@@ -384,6 +384,100 @@
     </model>
 
     <!--
+      ── 希腊字母标识障碍物 (alpha / psi / delta) ───────────────────────────────
+      与普通障碍物尺寸一致 (0.5×0.5×0.6 m)，六面均贴 PNG 贴图供 greek_letter 识别器使用。
+      贴图路径使用 file:// 绝对路径指向 resource/greek_number/ 目录下对应 PNG。
+      选取坐标原则：与已有障碍物中心间距 > 1.5 m，且不超出 ±7.5 m 边界。
+        ob_alpha : ( 2.5,  2.0) —— 中央偏东北
+        ob_psi   : (-1.5,  4.5) —— 北侧中部
+        ob_delta : ( 5.5, -5.0) —— 东南角
+    -->
+
+    <!-- Alpha obstacle  at (2.5, 2.0) -->
+    <model name="ob_alpha">
+      <static>true</static>
+      <pose>2.5 2.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <!-- 纯白底色 + emissive 自发光，确保 ogre 渲染下 HSV value >= 200 -->
+          <material>
+            <ambient>1.0 1.0 1.0 1</ambient>
+            <diffuse>1.0 1.0 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+            <emissive>0.5 0.5 0.5 1</emissive>
+            <pbr>
+              <metal>
+                <albedo_map>file:///home/parallels/workspace/projects/auto4508-project-part3/src/auto_nav_part3/resource/greek_number/alpha.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>1.0</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Psi obstacle  at (-1.5, 4.5) -->
+    <model name="ob_psi">
+      <static>true</static>
+      <pose>-1.5 4.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <!-- 纯白底色 + emissive 自发光，确保 ogre 渲染下 HSV value >= 200 -->
+          <material>
+            <ambient>1.0 1.0 1.0 1</ambient>
+            <diffuse>1.0 1.0 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+            <emissive>0.5 0.5 0.5 1</emissive>
+            <pbr>
+              <metal>
+                <albedo_map>file:///home/parallels/workspace/projects/auto4508-project-part3/src/auto_nav_part3/resource/greek_number/psi.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>1.0</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Delta obstacle  at (5.5, -5.0) -->
+    <model name="ob_delta">
+      <static>true</static>
+      <pose>5.5 -5.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <!-- 纯白底色 + emissive 自发光，确保 ogre 渲染下 HSV value >= 200 -->
+          <material>
+            <ambient>1.0 1.0 1.0 1</ambient>
+            <diffuse>1.0 1.0 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+            <emissive>0.5 0.5 0.5 1</emissive>
+            <pbr>
+              <metal>
+                <albedo_map>file:///home/parallels/workspace/projects/auto4508-project-part3/src/auto_nav_part3/resource/greek_number/delta.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>1.0</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
       ── 35 × 35 m enclosure walls ────────────────────────────────────────────
       Four gray walls forming a closed 35 × 35 m square centered at origin.
       Each wall: 35.4 m long × 0.2 m thick × 1.5 m tall.
