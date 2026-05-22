@@ -27,7 +27,7 @@ waypoint_service:
     #   "all"    → 加载所有含 x/y 字段的条目（colour + greek）
     #   "greek"  → 只加载 type=greek 的条目
     #   "colour" → 只加载 type=colour 的条目
-    marker_types: "all"
+    marker_types: "greek"
 
     # approach_dist: 在每个 marker 前方停车的距离（米）
     #   Nav2 goal 设为 marker 前方此距离处，避开 costmap 把 marker 本身标记为障碍的区域

@@ -68,8 +68,17 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import String
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+
+
+# 与 exploration_node/mapping_service 匹配，保证运行时切换和 late-join 都能收到。
+_ENABLE_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    depth=1,
+)
 
 
 # ─────────────────────────── 纯函数工具 ────────────────────────────────────
@@ -87,12 +96,38 @@ def _best_order(
     home: tuple[float, float],
     markers: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
-    """暴力枚举 TSP：枚举 markers 的所有排列，选 home→…→home 总距离最短的顺序。"""
+    """给路点排序。
+
+    少量点时用全排列求精确最短路；点数较多时用最近邻 + 2-opt 近似。
+    12 个 marker 的全排列是 12!，会把 service callback 卡住数分钟甚至更久。
+    """
     def total(order: tuple) -> float:
         pts = [home, *order, home]
         return sum(_dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
 
-    return list(min(permutations(markers), key=total))
+    if len(markers) <= 8:
+        return list(min(permutations(markers), key=total))
+
+    remaining = list(markers)
+    order: list[tuple[float, float]] = []
+    current = home
+    while remaining:
+        nxt = min(remaining, key=lambda p: _dist(current, p))
+        remaining.remove(nxt)
+        order.append(nxt)
+        current = nxt
+
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(order) - 2):
+            for j in range(i + 2, len(order)):
+                candidate = order[:i] + list(reversed(order[i:j])) + order[j:]
+                if total(tuple(candidate)) + 1e-9 < total(tuple(order)):
+                    order = candidate
+                    improved = True
+
+    return order
 
 
 def _approach_point(
@@ -173,6 +208,11 @@ class WaypointServiceNode(Node):
         # ── 发布 ──────────────────────────────────────────────────────────
         self._state_pub = self.create_publisher(String, '/part3/system/state', 10)
         self._plan_pub  = self.create_publisher(String, '/part3/waypoint/plan', 10)
+        self._exploration_enable_pub = self.create_publisher(
+            Bool,
+            '/part3/exploration/enable',
+            _ENABLE_QOS,
+        )
 
         # ── 订阅 /odometry/filtered：缓存机器人当前位置，服务触发时作为 home ──
         self._odom_x: float = 0.0
@@ -265,6 +305,14 @@ class WaypointServiceNode(Node):
     # ════════════════════════════════════════════════════════════════════
 
     def _on_start(self, _req, response: Trigger.Response) -> Trigger.Response:
+        self._refresh_runtime_parameters()
+
+        # 运行时切换到 waypoint 阶段：停止探索并冻结 SLAM 地图更新。
+        # 这样无需重启 launch，也能避免 map->odom 在规划/导航期间继续漂移。
+        self._pub_str(self._state_pub, 'WAYPOINT_PREPARE')
+        self._stop_exploration()
+        self._deactivate_slam()
+
         markers = self._collect_markers()
         if not markers:
             msg = (
@@ -380,24 +428,30 @@ class WaypointServiceNode(Node):
 
             # confirmed 字段由 perception_adapter 写入；旧文件无此字段则默认 True 向后兼容
             if self._marker_types == 'all':
-                pts = [
-                    (float(item['x']), float(item['y']))
-                    for item in data
+                candidates = [
+                    item for item in data
                     if 'x' in item and 'y' in item
-                    and item.get('confirmed', True)
                 ]
             else:
-                pts = [
-                    (float(item['x']), float(item['y']))
-                    for item in data
+                candidates = [
+                    item for item in data
                     if item.get('type') == self._marker_types
                     and 'x' in item and 'y' in item
-                    and item.get('confirmed', True)
                 ]
+
+            skipped_unconfirmed = sum(
+                1 for item in candidates if not item.get('confirmed', True)
+            )
+            pts = [
+                (float(item['x']), float(item['y']))
+                for item in candidates
+                if item.get('confirmed', True)
+            ]
 
             self.get_logger().info(
                 f'[WaypointService] 从文件加载 {len(pts)} 个路点'
-                f'（marker_types={self._marker_types}）: {path}'
+                f'（marker_types={self._marker_types}, '
+                f'跳过未确认={skipped_unconfirmed}）: {path}'
             )
             if not pts:
                 self.get_logger().warn(
@@ -411,6 +465,12 @@ class WaypointServiceNode(Node):
     # ════════════════════════════════════════════════════════════════════
     # 导航后台线程（event-based，不调用 spin_until_future_complete）
     # ════════════════════════════════════════════════════════════════════
+
+    def _stop_exploration(self) -> None:
+        msg = Bool()
+        msg.data = False
+        self._exploration_enable_pub.publish(msg)
+        self.get_logger().info('[WaypointService] 已发布 /part3/exploration/enable=false，停止探索')
 
     def _deactivate_slam(self) -> None:
         """暂停 slam_toolbox 新测量（pause_new_measurements），停止地图更新但保持 TF 发布。
@@ -439,9 +499,6 @@ class WaypointServiceNode(Node):
         三档全失败时跳过该路点继续，最后返回 home。
         两阶段与 home 分离：home 不可达时仍上报 WAYPOINT_COMPLETE 而非 FAILED。
         """
-
-        self._deactivate_slam()
-
         self.get_logger().info('[WaypointService] 等待 /navigate_through_poses server...')
         if not self._nav_client.wait_for_server(timeout_sec=30.0):
             self.get_logger().error(
@@ -625,6 +682,32 @@ class WaypointServiceNode(Node):
             poses.append(ps)
 
         return poses
+
+    def _refresh_runtime_parameters(self) -> None:
+        gp = self.get_parameter
+        self._home_coordinate = gp('home_coordinate').get_parameter_value().string_value
+        self._marker_types    = gp('marker_types').get_parameter_value().string_value.lower()
+        self._approach_dist   = gp('approach_dist').get_parameter_value().double_value
+        self._nav_timeout     = gp('nav_timeout_sec').get_parameter_value().double_value
+        self._marker_wait     = gp('marker_wait_sec').get_parameter_value().double_value
+        self._waypoints_file  = gp('waypoints_file').get_parameter_value().string_value
+
+        self._fixed_home = None
+        if self._home_coordinate:
+            try:
+                parts = self._home_coordinate.split(',')
+                self._fixed_home = (float(parts[0].strip()), float(parts[1].strip()))
+            except Exception:
+                self.get_logger().error(
+                    f'[WaypointService] home_coordinate 格式错误: "{self._home_coordinate}"，'
+                    '期望 "x,y"，将退回里程计自动定位'
+                )
+
+        self.get_logger().info(
+            f'[WaypointService] 当前参数: marker_types={self._marker_types} '
+            f'approach_dist={self._approach_dist}m nav_timeout={self._nav_timeout}s '
+            f'waypoints_file={self._waypoints_file}'
+        )
 
     @staticmethod
     def _pub_str(pub, text: str) -> None:
