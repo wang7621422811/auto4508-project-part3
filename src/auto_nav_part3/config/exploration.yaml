@@ -62,7 +62,7 @@ exploration_node:
     # 探索区域内 free/(free+unknown) ≥ 此值时停止。
     # 0.90 = 90% 格子已变为 free（探索了九成区域）。
     # 完美覆盖在实践中很难，90% 通常意味着可通行区域全部覆盖。
-    coverage_done_threshold: 0.70
+    coverage_done_threshold: 0.66
 
     # ── 导航参数 ─────────────────────────────────────────────────────────────
     # 单次 Nav2 导航超时（秒）。

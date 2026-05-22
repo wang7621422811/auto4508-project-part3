@@ -357,7 +357,12 @@ class WaypointServiceNode(Node):
             prev = ap
 
         plan_str = _format_plan(home, approach_stops)
-        self._pub_str(self._plan_pub,  plan_str)
+        self._publish_waypoint_progress(
+            points=approach_stops,
+            active_index=0,
+            reached_count=0,
+            status='started',
+        )
         self._pub_str(self._state_pub, 'WAYPOINT_DRIVE')
         self.get_logger().info(f'[WaypointService] 路径规划: {plan_str}')
 
@@ -371,7 +376,7 @@ class WaypointServiceNode(Node):
         ).start()
 
         response.success = True
-        response.message = f'Waypoint run started: {plan_str}'
+        response.message = f'Waypoint run started: {len(approach_stops)} point(s)'
         return response
 
     # ════════════════════════════════════════════════════════════════════
@@ -513,9 +518,23 @@ class WaypointServiceNode(Node):
         # 每次 attempt 超时：总超时按路点数均分，最少 40s
         per_timeout = max(40.0, self._nav_timeout / max(len(order), 1))
         prev = home
+        planned_points: list[tuple[float, float]] = []
+        planned_prev = home
+        for wp in order:
+            planned_ap = _approach_point(planned_prev, wp, self._approach_dist)
+            planned_points.append(planned_ap)
+            planned_prev = planned_ap
+        skipped: list[int] = []
 
         for idx, wp in enumerate(order):
             reached = False
+            self._publish_waypoint_progress(
+                points=planned_points,
+                active_index=idx,
+                reached_count=idx,
+                skipped=skipped,
+                status='driving',
+            )
             # 三档接近距离：1.0× → 1.5× → 2.0×
             # 若 approach_dist=0 则三档均退化为直接导航到 marker（_approach_point 处理）
             for mult in [1.0, 1.5, 2.0]:
@@ -534,6 +553,13 @@ class WaypointServiceNode(Node):
                     self.get_logger().info(
                         f'[WaypointService] 路点 {idx + 1} 到达 (×{mult:.1f})'
                     )
+                    self._publish_waypoint_progress(
+                        points=planned_points,
+                        active_index=idx,
+                        reached_count=idx + 1,
+                        skipped=skipped,
+                        status='reached',
+                    )
                     break
                 suffix = '，尝试更大接近距离' if mult < 2.0 else '，跳过'
                 self.get_logger().warn(
@@ -544,9 +570,24 @@ class WaypointServiceNode(Node):
                 self.get_logger().warn(
                     f'[WaypointService] 路点 {idx + 1} {wp} 三种接近距离均失败，已跳过'
                 )
+                skipped.append(idx)
+                self._publish_waypoint_progress(
+                    points=planned_points,
+                    active_index=idx,
+                    reached_count=idx + 1,
+                    skipped=skipped,
+                    status='skipped',
+                )
                 # prev 不更新，下一路点从当前实际位置计算接近方向
 
         # ── 阶段 2：返回 home ─────────────────────────────────────────────
+        self._publish_waypoint_progress(
+            points=planned_points,
+            active_index=len(order),
+            reached_count=len(order),
+            skipped=skipped,
+            status='returning_home',
+        )
         self.get_logger().info(
             f'[WaypointService] 阶段2 返回 home ({home[0]:.2f}, {home[1]:.2f})'
         )
@@ -554,12 +595,26 @@ class WaypointServiceNode(Node):
         ok = self._run_nav([home_pose], timeout=60.0)
         if ok:
             self.get_logger().info('[WaypointService] 已返回 home，任务完成')
+            self._publish_waypoint_progress(
+                points=planned_points,
+                active_index=len(order),
+                reached_count=len(order),
+                skipped=skipped,
+                status='complete',
+            )
             self._pub_str(self._state_pub, 'COMPLETE')
         else:
             self.get_logger().warn(
                 f'[WaypointService] 路点导航完成，但无法返回 home '
                 f'({home[0]:.2f}, {home[1]:.2f})。'
                 'home 可能在地图范围外，请在 waypoint.yaml 设置 home_coordinate。'
+            )
+            self._publish_waypoint_progress(
+                points=planned_points,
+                active_index=len(order),
+                reached_count=len(order),
+                skipped=skipped,
+                status='complete_no_home',
             )
             self._pub_str(self._state_pub, 'WAYPOINT_COMPLETE')
 
@@ -708,6 +763,28 @@ class WaypointServiceNode(Node):
             f'approach_dist={self._approach_dist}m nav_timeout={self._nav_timeout}s '
             f'waypoints_file={self._waypoints_file}'
         )
+
+    def _publish_waypoint_progress(
+        self,
+        points: list[tuple[float, float]],
+        active_index: int,
+        reached_count: int,
+        status: str,
+        skipped: Optional[list[int]] = None,
+    ) -> None:
+        payload = {
+            'type': 'waypoint_progress',
+            'status': status,
+            'active_index': active_index,
+            'reached_count': reached_count,
+            'total': len(points),
+            'skipped': skipped or [],
+            'points': [
+                {'label': str(i + 1), 'x': round(x, 3), 'y': round(y, 3)}
+                for i, (x, y) in enumerate(points)
+            ],
+        }
+        self._pub_str(self._plan_pub, json.dumps(payload, separators=(',', ':')))
 
     @staticmethod
     def _pub_str(pub, text: str) -> None:
