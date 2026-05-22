@@ -3,19 +3,25 @@ import threading
 import time
 import math
 import base64
+import os
+import json
+import random
 
 import cv2
 import numpy as np
 
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
+from nav2_msgs.action import NavigateThroughPoses
 from sensor_msgs.msg import LaserScan, Image
-from geometry_msgs.msg import PoseArray, Twist
+from tf2_ros import Buffer, TransformListener, TransformException
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Twist
 
 
 app = Flask(__name__)
@@ -40,6 +46,37 @@ GREEK_MARKERS_TOPIC = "/part3/perception/greek_markers"
 NAV_PATH_TOPIC = "/plan"
 
 START_MAPPING_SERVICE = "/part3/mapping/start"
+NAV2_WAYPOINT_ACTION = "/navigate_through_poses"
+
+# New waypoint JSON function
+WAYPOINTS_DIR = os.environ.get(
+    "WAYPOINTS_DIR",
+    os.path.expanduser("~/auto4508-project-part3/artifacts/waypoints")
+)
+
+MARKER_JSON_PATH = os.environ.get(
+    "MARKER_JSON_PATH",
+    os.path.join(WAYPOINTS_DIR, "marker.json")
+)
+
+# Fallback path for container/project layout
+if not os.path.isdir(WAYPOINTS_DIR):
+    WAYPOINTS_DIR = "/root/workspace/auto_nav_part3_team18/auto4508-project-part3/artifacts/waypoints"
+
+if not os.path.isfile(MARKER_JSON_PATH):
+    marker_candidates = [
+        os.path.join(WAYPOINTS_DIR, "marker.json"),
+        os.path.join(WAYPOINTS_DIR, "markers.json"),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "artifacts", "waypoints", "marker.json")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "artifacts", "waypoints", "markers.json")),
+    ]
+    for candidate in marker_candidates:
+        if os.path.isfile(candidate):
+            MARKER_JSON_PATH = candidate
+            break
+
+SELECTED_WAYPOINTS_TOPIC = "/part3/perception/greek_markers"
+START_WAYPOINT_SERVICE = "/part3/waypoint/start"
 
 
 # =========================
@@ -70,6 +107,14 @@ robot_data = {
     "greek_markers": [],
 
     "path": [],
+    "waypoint_progress": {
+        "status": "idle",
+        "active_index": 0,
+        "reached_count": 0,
+        "total": 0,
+        "skipped": [],
+        "points": []
+    },
 
     "last_update_time": 0.0
 }
@@ -152,6 +197,283 @@ def path_to_list(msg):
             "x": round(float(pose_stamped.pose.position.x), 3),
             "y": round(float(pose_stamped.pose.position.y), 3)
         })
+
+    return result
+
+
+# =========================
+# Waypoint JSON helpers
+# =========================
+
+def safe_waypoint_file_path(file_name):
+    """
+    Prevent path traversal. Only allow JSON files inside WAYPOINTS_DIR.
+    """
+    base_dir = os.path.abspath(WAYPOINTS_DIR)
+    target_path = os.path.abspath(os.path.join(base_dir, file_name))
+
+    if not target_path.startswith(base_dir):
+        raise ValueError("Invalid waypoint file path")
+
+    if not target_path.endswith(".json"):
+        raise ValueError("Only JSON waypoint files are allowed")
+
+    return target_path
+
+
+def infer_waypoint_category(file_name, waypoints, raw_data=None):
+    """
+    Classify waypoint JSON into:
+    - greek
+    - color
+    - other
+
+    It checks filename and waypoint fields such as name/type/color/colour/label.
+    """
+    text_parts = [file_name.lower()]
+
+    if isinstance(raw_data, dict):
+        for key, value in raw_data.items():
+            if isinstance(key, str):
+                text_parts.append(key.lower())
+            if isinstance(value, str):
+                text_parts.append(value.lower())
+
+    for wp in waypoints:
+        for key in ["name", "id", "type", "label", "color", "colour", "class"]:
+            value = wp.get(key)
+            if value is not None:
+                text_parts.append(str(value).lower())
+
+    text = " ".join(text_parts)
+
+    greek_keywords = [
+        "greek", "alpha", "beta", "gamma", "delta", "epsilon",
+        "zeta", "eta", "theta", "lambda", "mu", "omega",
+        "phi", "psi", "sigma", "tau", "kappa",
+        "α", "β", "γ", "δ", "ε", "θ", "λ", "ω", "φ", "ψ", "σ"
+    ]
+
+    color_keywords = [
+        "color", "colour", "red", "yellow", "blue", "green",
+        "orange", "purple", "black", "white", "obstacle"
+    ]
+
+    if any(k in text for k in greek_keywords):
+        return "greek"
+
+    if any(k in text for k in color_keywords):
+        return "color"
+
+    return "other"
+
+
+def extract_waypoint_list(raw_data):
+    """
+    Convert different JSON structures into:
+    [
+        {"name": "A", "x": 1.2, "y": 3.4, "z": 0.0, ...},
+        ...
+    ]
+
+    Supported examples:
+    1. [{"x": 1.0, "y": 2.0}]
+    2. {"waypoints": [{"x": 1.0, "y": 2.0}]}
+    3. {"points": [{"x": 1.0, "y": 2.0}]}
+    4. {"poses": [{"position": {"x": 1.0, "y": 2.0}}]}
+    5. {"A": {"x": 1.0, "y": 2.0}, "B": {"x": 3.0, "y": 4.0}}
+    """
+    if isinstance(raw_data, list):
+        raw_points = raw_data
+
+    elif isinstance(raw_data, dict):
+        if "waypoints" in raw_data:
+            raw_points = raw_data["waypoints"]
+        elif "points" in raw_data:
+            raw_points = raw_data["points"]
+        elif "poses" in raw_data:
+            raw_points = raw_data["poses"]
+        elif "goals" in raw_data:
+            raw_points = raw_data["goals"]
+        elif "markers" in raw_data:
+            raw_points = raw_data["markers"]
+        else:
+            raw_points = []
+            for key, value in raw_data.items():
+                if isinstance(value, dict):
+                    item = dict(value)
+                    item.setdefault("name", key)
+                    raw_points.append(item)
+    else:
+        raw_points = []
+
+    waypoints = []
+
+    for i, item in enumerate(raw_points):
+        if not isinstance(item, dict):
+            continue
+
+        name = item.get("name", item.get("id", item.get("label", f"WP{i}")))
+
+        if "position" in item and isinstance(item["position"], dict):
+            pos = item["position"]
+            x = pos.get("x", 0.0)
+            y = pos.get("y", 0.0)
+            z = pos.get("z", 0.0)
+        elif "pose" in item and isinstance(item["pose"], dict):
+            pose = item["pose"]
+            if "position" in pose and isinstance(pose["position"], dict):
+                pos = pose["position"]
+                x = pos.get("x", 0.0)
+                y = pos.get("y", 0.0)
+                z = pos.get("z", 0.0)
+            else:
+                x = pose.get("x", 0.0)
+                y = pose.get("y", 0.0)
+                z = pose.get("z", 0.0)
+        else:
+            x = item.get("x", item.get("px", 0.0))
+            y = item.get("y", item.get("py", 0.0))
+            z = item.get("z", 0.0)
+
+        try:
+            wp = dict(item)
+            wp["name"] = str(name)
+            wp["x"] = float(x)
+            wp["y"] = float(y)
+            wp["z"] = float(z)
+            waypoints.append(wp)
+        except Exception:
+            continue
+
+    return waypoints
+
+
+def marker_position(marker):
+    if "position" in marker and isinstance(marker["position"], dict):
+        pos = marker["position"]
+        return pos.get("x", 0.0), pos.get("y", 0.0), pos.get("z", 0.0)
+
+    if "pose" in marker and isinstance(marker["pose"], dict):
+        pose = marker["pose"]
+        if "position" in pose and isinstance(pose["position"], dict):
+            pos = pose["position"]
+            return pos.get("x", 0.0), pos.get("y", 0.0), pos.get("z", 0.0)
+        return pose.get("x", 0.0), pose.get("y", 0.0), pose.get("z", 0.0)
+
+    return marker.get("x", 0.0), marker.get("y", 0.0), marker.get("z", 0.0)
+
+
+def load_filtered_markers():
+    """
+    Load marker.json/markers.json and keep one confirmed marker per (type, label).
+    The marker with the highest count wins; ties are resolved randomly.
+    """
+    if not os.path.isfile(MARKER_JSON_PATH):
+        return [], f"Marker JSON file not found: {MARKER_JSON_PATH}"
+
+    with open(MARKER_JSON_PATH, "r", encoding="utf-8") as f:
+        raw_data = json.load(f)
+
+    if isinstance(raw_data, dict):
+        raw_markers = raw_data.get("markers", raw_data.get("waypoints", raw_data.get("points", [])))
+    elif isinstance(raw_data, list):
+        raw_markers = raw_data
+    else:
+        raw_markers = []
+
+    grouped = {}
+
+    for index, marker in enumerate(raw_markers):
+        if not isinstance(marker, dict):
+            continue
+
+        if marker.get("confirmed") is not True:
+            continue
+
+        marker_type = str(marker.get("type", "unknown")).strip().lower()
+        label = str(marker.get("label", marker.get("name", f"marker_{index}"))).strip().lower()
+
+        if not marker_type or not label:
+            continue
+
+        try:
+            x, y, z = marker_position(marker)
+            item = dict(marker)
+            item["type"] = marker_type
+            item["label"] = label
+            item["x"] = round(float(x), 4)
+            item["y"] = round(float(y), 4)
+            item["z"] = round(float(z), 4)
+            item["count"] = int(marker.get("count", 0))
+            item["confidence"] = float(marker.get("confidence", 0.0))
+            item["name"] = f"{marker_type}:{label}"
+        except Exception:
+            continue
+
+        grouped.setdefault((marker_type, label), []).append(item)
+
+    filtered = []
+
+    for candidates in grouped.values():
+        max_count = max(item["count"] for item in candidates)
+        winners = [item for item in candidates if item["count"] == max_count]
+        filtered.append(random.choice(winners))
+
+    filtered.sort(key=lambda item: (item["type"], item["label"]))
+
+    return filtered, None
+
+
+def load_waypoint_file(file_name):
+    file_path = safe_waypoint_file_path(file_name)
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        raw_data = json.load(f)
+
+    waypoints = extract_waypoint_list(raw_data)
+    category = infer_waypoint_category(file_name, waypoints, raw_data)
+
+    return waypoints, category
+
+
+def list_waypoint_json_files():
+    """
+    Return categorized waypoint files.
+    """
+    result = {
+        "greek": [],
+        "color": [],
+        "other": []
+    }
+
+    if not os.path.isdir(WAYPOINTS_DIR):
+        return result
+
+    for file_name in sorted(os.listdir(WAYPOINTS_DIR)):
+        if not file_name.endswith(".json"):
+            continue
+
+        try:
+            waypoints, category = load_waypoint_file(file_name)
+
+            entry = {
+                "file": file_name,
+                "category": category,
+                "count": len(waypoints),
+                "waypoints": waypoints
+            }
+
+            result.setdefault(category, []).append(entry)
+
+        except Exception as e:
+            result["other"].append({
+                "file": file_name,
+                "category": "other",
+                "count": 0,
+                "error": str(e),
+                "waypoints": []
+            })
 
     return result
 
@@ -270,8 +592,19 @@ class Part3WebUINode(Node):
             START_MAPPING_SERVICE
         )
 
-        # Dead-man timeout for manual control.
-        self.manual_timeout_sec = 1.0
+        self.start_waypoint_client = self.create_client(
+            Trigger,
+            START_WAYPOINT_SERVICE
+        )
+
+        self.nav2_waypoint_client = ActionClient(
+            self,
+            NavigateThroughPoses,
+            NAV2_WAYPOINT_ACTION
+        )
+
+        # Dead-man timeout for keyboard/manual control
+        self.manual_timeout_sec = 0.6
         self.safety_timer = self.create_timer(
             0.1,
             self.manual_timeout_check
@@ -284,6 +617,10 @@ class Part3WebUINode(Node):
         self.get_logger().info(f"Subscribing camera: {CAMERA_TOPIC}")
         self.get_logger().info(f"Publishing manual control: {CMD_VEL_TOPIC}")
         self.get_logger().info(f"Start mapping service: {START_MAPPING_SERVICE}")
+        self.get_logger().info(f"Waypoint JSON directory: {WAYPOINTS_DIR}")
+        self.get_logger().info(f"Publishing selected waypoints: {SELECTED_WAYPOINTS_TOPIC}")
+        self.get_logger().info(f"Start waypoint service: {START_WAYPOINT_SERVICE}")
+        self.get_logger().info(f"Nav2 waypoint action: {NAV2_WAYPOINT_ACTION}")
 
     def update_connection(self):
         robot_data["connection"] = "ROS2 connected"
@@ -404,7 +741,23 @@ class Part3WebUINode(Node):
         self.update_connection()
 
     def waypoint_plan_text_callback(self, msg):
-        robot_data["waypoint_plan"] = msg.data
+        try:
+            payload = json.loads(msg.data)
+            if isinstance(payload, dict) and payload.get("type") == "waypoint_progress":
+                robot_data["waypoint_progress"] = payload
+                total = int(payload.get("total", 0) or 0)
+                reached = int(payload.get("reached_count", 0) or 0)
+                status = str(payload.get("status", "driving")).replace("_", " ")
+                if total > 0:
+                    robot_data["waypoint_plan"] = f"{status}: {reached}/{total}"
+                else:
+                    robot_data["waypoint_plan"] = status
+                self.update_connection()
+                return
+        except Exception:
+            pass
+
+        robot_data["waypoint_plan"] = msg.data[:80]
         self.update_connection()
 
     def estop_event_callback(self, msg):
@@ -512,41 +865,31 @@ class Part3WebUINode(Node):
         """
         Clear both stop hold and automatic E-stop.
         """
-        global auto_estop_active
-        global stop_hold_active
-        global manual_motion_active
+        msg = PoseArray()
+        msg.header.frame_id = "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
 
-        auto_estop_active = False
-        stop_hold_active = False
-        manual_motion_active = False
+        for wp in waypoints:
+            pose = Pose()
+            pose.position.x = float(wp.get("x", 0.0))
+            pose.position.y = float(wp.get("y", 0.0))
+            pose.position.z = float(wp.get("z", 0.0))
 
-        self.publish_stop()
+            pose.orientation.x = 0.0
+            pose.orientation.y = 0.0
+            pose.orientation.z = 0.0
+            pose.orientation.w = 1.0
 
-        robot_data["command_status"] = "Stop hold / Auto E-Stop cleared"
-        robot_data["map_status"] = "Ready"
+            msg.poses.append(pose)
 
-        return True
+        self.selected_waypoints_pub.publish(msg)
 
-    def manual_timeout_check(self):
-        global last_manual_command_time
-        global stop_hold_active
-        global auto_estop_active
-        global manual_motion_active
+        robot_data["waypoint_plan"] = f"Loaded {len(waypoints)} waypoint(s)"
+        robot_data["command_status"] = "Waypoints loaded"
 
-        # Stop hold or Auto E-Stop: keep publishing zero velocity.
-        if stop_hold_active or auto_estop_active:
-            self.publish_stop()
-            return
+        return True, f"Published {len(waypoints)} waypoint(s)"
 
-        if last_manual_command_time <= 0.0:
-            return
-
-        # If robot was moving but UI stopped sending heartbeat commands, trigger Auto E-Stop.
-        if manual_motion_active:
-            if time.time() - last_manual_command_time > self.manual_timeout_sec:
-                self.trigger_auto_estop("manual_control_timeout")
-
-    def call_start_mapping_service(self):
+    def call_start_waypoint_service(self):
         """
         Call:
         ros2 service call /part3/mapping/start std_srvs/srv/Trigger {}
@@ -571,6 +914,38 @@ class Part3WebUINode(Node):
             return False, "Start mapping service returned no result"
 
         return bool(result.success), result.message
+
+    def send_nav2_waypoints(self, waypoints):
+        if len(waypoints) == 0:
+            return False, "No filtered marker waypoints available"
+
+        if not self.nav2_waypoint_client.wait_for_server(timeout_sec=2.0):
+            return False, "Nav2 NavigateThroughPoses action server is not available"
+
+        goal_msg = NavigateThroughPoses.Goal()
+
+        for wp in waypoints:
+            pose_stamped = PoseStamped()
+            pose_stamped.header.frame_id = str(wp.get("frame", "map") or "map")
+            pose_stamped.header.stamp = self.get_clock().now().to_msg()
+            pose_stamped.pose.position.x = float(wp.get("x", 0.0))
+            pose_stamped.pose.position.y = float(wp.get("y", 0.0))
+            pose_stamped.pose.position.z = float(wp.get("z", 0.0))
+            pose_stamped.pose.orientation.x = 0.0
+            pose_stamped.pose.orientation.y = 0.0
+            pose_stamped.pose.orientation.z = 0.0
+            pose_stamped.pose.orientation.w = 1.0
+            goal_msg.poses.append(pose_stamped)
+
+        self.nav2_waypoint_client.send_goal_async(goal_msg)
+
+        robot_data["system_state"] = "WAYPOINT_DRIVE"
+        robot_data["waypoint_plan"] = "Nav2 markers: " + " -> ".join(
+            [f"{wp.get('type')}:{wp.get('label')}({wp.get('x'):.2f},{wp.get('y'):.2f})" for wp in waypoints]
+        )
+        robot_data["command_status"] = f"Sent {len(waypoints)} filtered marker waypoint(s) to Nav2"
+
+        return True, f"Sent {len(waypoints)} waypoint(s) to {NAV2_WAYPOINT_ACTION}"
 
 
 # =========================
@@ -617,6 +992,32 @@ def get_camera_frame():
     return jsonify(camera_data)
 
 
+@app.route("/api/filtered_markers")
+def filtered_markers():
+    markers, error = load_filtered_markers()
+
+    if error is not None:
+        return jsonify({
+            "success": False,
+            "message": error,
+            "path": MARKER_JSON_PATH,
+            "markers": []
+        }), 404
+
+    robot_data["markers"] = markers
+    robot_data["greek_markers"] = [
+        marker for marker in markers
+        if marker.get("type") == "greek"
+    ]
+
+    return jsonify({
+        "success": True,
+        "path": MARKER_JSON_PATH,
+        "count": len(markers),
+        "markers": markers
+    })
+
+
 @app.route("/api/start_mapping", methods=["POST"])
 def start_mapping():
     if web_ui_node is None:
@@ -636,6 +1037,204 @@ def start_mapping():
         "message": message
     })
 
+
+@app.route("/api/start_nav2_waypoints", methods=["POST"])
+def start_nav2_waypoints():
+    if web_ui_node is None:
+        return jsonify({
+            "success": False,
+            "message": "ROS2 node is not ready"
+        }), 503
+
+    markers, error = load_filtered_markers()
+
+    if error is not None:
+        robot_data["command_status"] = "Waypoint file missing"
+        return jsonify({
+            "success": False,
+            "message": error,
+            "markers": []
+        }), 404
+
+    greek_markers = [
+        marker for marker in markers
+        if str(marker.get("type", "")).strip().lower() == "greek"
+    ]
+
+    if len(greek_markers) == 0:
+        robot_data["command_status"] = "No greek waypoints"
+        return jsonify({
+            "success": False,
+            "message": "No confirmed greek marker waypoints available",
+            "markers": []
+        }), 400
+
+    robot_data["markers"] = greek_markers
+    robot_data["greek_markers"] = greek_markers
+
+    # Use the waypoint service rather than sending marker coordinates straight
+    # to Nav2. The service offsets each goal away from the marker obstacle and
+    # clears the global costmap before planning.
+    success, message = web_ui_node.call_start_waypoint_service()
+
+    if success:
+        robot_data["system_state"] = "WAYPOINT_DRIVE"
+        robot_data["map_status"] = "Waypoint service start command sent"
+        robot_data["command_status"] = "Waypoint started"
+    else:
+        robot_data["command_status"] = "Waypoint start failed"
+
+    return jsonify({
+        "success": success,
+        "message": message,
+        "waypoint_count": len(greek_markers),
+        "markers": greek_markers
+    })
+
+
+@app.route("/api/waypoint_files")
+def waypoint_files():
+    categorized = list_waypoint_json_files()
+
+    return jsonify({
+        "directory": WAYPOINTS_DIR,
+        "categories": categorized,
+        "greek": categorized.get("greek", []),
+        "color": categorized.get("color", []),
+        "other": categorized.get("other", [])
+    })
+
+
+@app.route("/api/execute_waypoint_file", methods=["POST"])
+def execute_waypoint_file():
+    """
+    Expected JSON:
+    {
+        "file": "xxx.json",
+        "category": "greek" or "color" or "other",
+        "auto_start": true
+    }
+    """
+    data = request.get_json(silent=True)
+
+    if data is None:
+        return jsonify({
+            "success": False,
+            "message": "No JSON body received"
+        }), 400
+
+    file_name = data.get("file", "")
+    auto_start = bool(data.get("auto_start", True))
+
+    if not file_name:
+        return jsonify({
+            "success": False,
+            "message": "No waypoint file selected"
+        }), 400
+
+    if web_ui_node is None:
+        return jsonify({
+            "success": False,
+            "message": "ROS2 node is not ready"
+        }), 503
+
+    try:
+        waypoints, category = load_waypoint_file(file_name)
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": f"Failed to load waypoint file: {e}"
+        }), 400
+
+    if len(waypoints) == 0:
+        return jsonify({
+            "success": False,
+            "message": "Waypoint file contains no valid points"
+        }), 400
+
+    publish_success, publish_message = web_ui_node.publish_waypoints_from_json(waypoints)
+
+    service_success = False
+    service_message = "Start waypoint service was not called"
+
+    if auto_start:
+        service_success, service_message = web_ui_node.call_start_waypoint_service()
+
+    if publish_success:
+        robot_data["system_state"] = "WAYPOINT_DRIVE"
+        robot_data["map_status"] = f"{category} waypoint command sent"
+        robot_data["command_status"] = "Waypoint started" if service_success else "Waypoints loaded"
+
+    return jsonify({
+        "success": publish_success,
+        "message": publish_message,
+        "file": file_name,
+        "category": category,
+        "waypoint_count": len(waypoints),
+        "waypoints": waypoints,
+        "start_service_success": service_success,
+        "start_service_message": service_message
+    })
+
+@app.route("/api/execute_selected_waypoints", methods=["POST"])
+def execute_selected_waypoints():
+    """
+    Execute only selected waypoint points from the UI.
+
+    Expected JSON:
+    {
+        "waypoints": [
+            {"name": "Alpha", "x": 1.2, "y": 3.4, "z": 0.0},
+            {"name": "Beta", "x": 2.0, "y": 4.1, "z": 0.0}
+        ],
+        "auto_start": true
+    }
+    """
+    data = request.get_json(silent=True)
+
+    if data is None:
+        return jsonify({
+            "success": False,
+            "message": "No JSON body received"
+        }), 400
+
+    waypoints = data.get("waypoints", [])
+    auto_start = bool(data.get("auto_start", True))
+
+    if len(waypoints) == 0:
+        return jsonify({
+            "success": False,
+            "message": "No waypoint selected"
+        }), 400
+
+    if web_ui_node is None:
+        return jsonify({
+            "success": False,
+            "message": "ROS2 node is not ready"
+        }), 503
+
+    # Reuse the existing publisher function
+    publish_success, publish_message = web_ui_node.publish_waypoints_from_json(waypoints)
+
+    service_success = False
+    service_message = "Start waypoint service was not called"
+
+    if auto_start:
+        service_success, service_message = web_ui_node.call_start_waypoint_service()
+
+    if publish_success:
+        robot_data["system_state"] = "WAYPOINT_DRIVE"
+        robot_data["map_status"] = "Selected waypoint command sent"
+        robot_data["command_status"] = "Waypoint started" if service_success else "Waypoints loaded"
+
+    return jsonify({
+        "success": publish_success,
+        "message": publish_message,
+        "waypoint_count": len(waypoints),
+        "waypoints": waypoints,
+        "start_service_success": service_success,
+        "start_service_message": service_message
+    })
 
 @app.route("/api/manual_control", methods=["POST"])
 def manual_control():
@@ -765,6 +1364,9 @@ def clear_stop_hold():
 
 @app.route("/api/debug")
 def debug():
+    categorized = list_waypoint_json_files()
+    markers, marker_error = load_filtered_markers()
+
     return jsonify({
         "robot_data": robot_data,
         "map_width": map_data["width"],
@@ -775,10 +1377,24 @@ def debug():
         "camera_width": camera_data["width"],
         "camera_height": camera_data["height"],
         "ros_node_ready": web_ui_node is not None,
-        "stop_hold_active": stop_hold_active,
-        "auto_estop_active": auto_estop_active,
-        "manual_motion_active": manual_motion_active,
-        "start_mapping_service": START_MAPPING_SERVICE
+        "start_mapping_service": START_MAPPING_SERVICE,
+        "waypoints_dir": WAYPOINTS_DIR,
+        "waypoint_file_count": (
+            len(categorized.get("greek", []))
+            + len(categorized.get("color", []))
+            + len(categorized.get("other", []))
+        ),
+        "waypoint_categories": {
+            "greek": len(categorized.get("greek", [])),
+            "color": len(categorized.get("color", [])),
+            "other": len(categorized.get("other", []))
+        },
+        "selected_waypoints_topic": SELECTED_WAYPOINTS_TOPIC,
+        "start_waypoint_service": START_WAYPOINT_SERVICE,
+        "marker_json_path": MARKER_JSON_PATH,
+        "filtered_marker_count": len(markers),
+        "filtered_marker_error": marker_error,
+        "nav2_waypoint_action": NAV2_WAYPOINT_ACTION
     })
 
 
