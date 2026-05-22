@@ -1,7 +1,7 @@
 image: artifacts/maps/discovery_map.pgm
 mode: trinary
 resolution: 0.05000000074505806
-origin: [-2.267302, -5.256705, 0.0]
+origin: [-2.263574, -5.266455, 0.0]
 negate: 0
 occupied_thresh: 0.65
 free_thresh: 0.25

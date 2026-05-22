@@ -235,40 +235,6 @@
             </div>
 
             <div class="card">
-                <h2>Filtered Marker Waypoints</h2>
-
-                <p class="camera-info">
-                    <b>Source:</b> <span id="markerSource">Loading</span>
-                </p>
-
-                <table class="marker-table">
-                    <thead>
-                        <tr>
-                            <th>Type</th>
-                            <th>Label</th>
-                            <th>Count</th>
-                            <th>X</th>
-                            <th>Y</th>
-                        </tr>
-                    </thead>
-                    <tbody id="filteredMarkerTable">
-                        <tr>
-                            <td colspan="5">Loading markers</td>
-                        </tr>
-                    </tbody>
-                </table>
-
-                <div class="button-stack">
-                    <button id="refreshMarkerButton" class="orange" onclick="loadFilteredMarkers()">
-                        Refresh Markers
-                    </button>
-                </div>
-                <div class="progress-track">
-                    <span id="markerLoadProgress" class="progress-fill teal"></span>
-                </div>
-            </div>
-
-            <div class="card">
                 <h2>Map Data</h2>
                 <p><b>Width:</b> <span id="mapWidth">0</span></p>
                 <p><b>Height:</b> <span id="mapHeight">0</span></p>
@@ -392,6 +358,27 @@
             return fallback;
         }
 
+        function mappingStatusText(text, state) {
+            const source = String(text || "").toLowerCase();
+            const coverage = source.match(/coverage[^0-9]*(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%/);
+            const coverageText = coverage ? ` coverage ${Number(coverage[1] || coverage[2]).toFixed(1)}%` : "";
+
+            if (source.includes("failed") || source.includes("error")) return "FAILED" + coverageText;
+            if (source.includes("complete") || source.includes("success")) return "FINISH" + coverageText;
+            if (state === "MAPPING" || source.includes("mapping") || source.includes("start")) return "IN PROGRESS" + coverageText;
+            return "NOT START" + coverageText;
+        }
+
+        function mappingProgressValue(text, state) {
+            const source = String(text || "").toLowerCase();
+            const coverage = source.match(/coverage[^0-9]*(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%/);
+            if (coverage) return Number(coverage[1] || coverage[2]);
+            if (source.includes("failed") || source.includes("error")) return 18;
+            if (source.includes("complete") || source.includes("success")) return 100;
+            if (state === "MAPPING" || source.includes("mapping") || source.includes("start")) return 50;
+            return 0;
+        }
+
         async function updateStatus() {
             try {
                 const response = await fetch("/api/status");
@@ -474,7 +461,10 @@
                 filteredMarkers = data.markers || [];
                 renderFilteredMarkers(filteredMarkers);
 
-                document.getElementById("markerSource").innerText = data.path || "markers.json";
+                const markerSource = document.getElementById("markerSource");
+                if (markerSource) {
+                    markerSource.innerText = data.path || "markers.json";
+                }
                 latestData = latestData || {};
                 latestData.markers = filteredMarkers;
                 latestData.greek_markers = filteredMarkers.filter(marker => marker.type === "greek");
@@ -500,6 +490,7 @@
 
         function renderFilteredMarkers(markers) {
             const table = document.getElementById("filteredMarkerTable");
+            if (!table) return;
             table.innerHTML = "";
 
             if (!markers || markers.length === 0) {
@@ -578,13 +569,13 @@
             const state = data.system_state ?? "---";
 
             document.getElementById("systemState").innerText = state;
-            document.getElementById("mapStatus").innerText = data.map_status ?? "---";
+            document.getElementById("mapStatus").innerText = mappingStatusText(data.map_status, state);
             const waypointPercent = renderWaypointProgress(data.waypoint_progress, data.waypoint_plan, state);
             document.getElementById("commandStatus").innerText = shortCommandStatus(data.command_status, state);
 
             updateStateColour(state);
             updateStartMappingAvailability(state);
-            setProgress("mappingProgress", progressFromText(data.map_status, state === "MAPPING" ? 62 : 10));
+            setProgress("mappingProgress", mappingProgressValue(data.map_status, state));
             setProgress("waypointProgress", waypointPercent);
             setProgress("commandProgress", progressFromText(data.command_status, 12));
         }

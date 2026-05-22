@@ -26,3 +26,5 @@ cd /home/parallels/workspace/projects/auto4508-project-part3
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 bag play artifacts/bags/session_1779416560 --clock --loop
+
+(base) parallels@ubuntu-linux-2404:auto4508-project-part3$  source /home/parallels/workspace/projects/auto4508-project-part3/.venv/bin/activate

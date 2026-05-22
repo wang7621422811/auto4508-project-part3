@@ -716,6 +716,7 @@ def generate_launch_description():
         output='screen',
         parameters=[waypoint_config_path, {
             'use_sim_time': True,
+            'marker_types': 'greek',
             'waypoints_file': _MARKERS_JSON,   # 绝对路径，第二趟直接读 JSON，无需感知节点
         }],
     )

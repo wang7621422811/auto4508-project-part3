@@ -34,6 +34,9 @@ app = Flask(__name__)
 MAP_TOPIC = "/map"
 ODOM_TOPIC = "/odometry/filtered"
 SCAN_TOPIC = "/scan"
+USE_TF_POSE = True
+ROBOT_MAP_FRAME = "map"
+ROBOT_BASE_FRAME = "base_link"
 CAMERA_TOPIC = "/camera/image"
 CMD_VEL_TOPIC = "/cmd_vel"
 
@@ -141,13 +144,6 @@ camera_data = {
 
 web_ui_node = None
 last_manual_command_time = 0.0
-
-# Safety / dead-man state
-# Stop Robot works as a hold switch.
-# Auto E-Stop is triggered when a moving keyboard command loses heartbeat.
-stop_hold_active = False
-auto_estop_active = False
-manual_motion_active = False
 
 
 # =========================
@@ -486,7 +482,6 @@ class Part3WebUINode(Node):
     def __init__(self):
         super().__init__("part3_web_ui_node")
 
-        # /map from slam_toolbox uses RELIABLE + TRANSIENT_LOCAL.
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -495,7 +490,13 @@ class Part3WebUINode(Node):
         )
 
         normal_qos = 10
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        self.pose_timer = self.create_timer(
+            0.1,
+            self.update_robot_pose_from_tf
+        )
         # Subscribers
         self.create_subscription(
             OccupancyGrid,
@@ -574,15 +575,9 @@ class Part3WebUINode(Node):
             normal_qos
         )
 
-        self.system_state_pub = self.create_publisher(
-            String,
-            SYSTEM_STATE_TOPIC,
-            normal_qos
-        )
-
-        self.estop_event_pub = self.create_publisher(
-            String,
-            ESTOP_EVENT_TOPIC,
+        self.selected_waypoints_pub = self.create_publisher(
+            PoseArray,
+            SELECTED_WAYPOINTS_TOPIC,
             normal_qos
         )
 
@@ -615,7 +610,7 @@ class Part3WebUINode(Node):
         self.get_logger().info(f"Subscribing odom: {ODOM_TOPIC}")
         self.get_logger().info(f"Subscribing scan: {SCAN_TOPIC}")
         self.get_logger().info(f"Subscribing camera: {CAMERA_TOPIC}")
-        self.get_logger().info(f"Publishing manual control: {CMD_VEL_TOPIC}")
+        self.get_logger().info(f"Publishing manual/keyboard control: {CMD_VEL_TOPIC}")
         self.get_logger().info(f"Start mapping service: {START_MAPPING_SERVICE}")
         self.get_logger().info(f"Waypoint JSON directory: {WAYPOINTS_DIR}")
         self.get_logger().info(f"Publishing selected waypoints: {SELECTED_WAYPOINTS_TOPIC}")
@@ -640,7 +635,39 @@ class Part3WebUINode(Node):
 
         self.update_connection()
 
+    def update_robot_pose_from_tf(self):
+        """
+        Use TF map -> base_link for UI robot pose.
+        This keeps the robot icon in the same frame as /map and /plan.
+        """
+        if not USE_TF_POSE:
+            return
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                ROBOT_MAP_FRAME,
+                ROBOT_BASE_FRAME,
+                rclpy.time.Time()
+            )
+
+            t = transform.transform.translation
+            q = transform.transform.rotation
+
+            robot_data["x"] = round(float(t.x), 3)
+            robot_data["y"] = round(float(t.y), 3)
+            robot_data["yaw"] = round(float(quaternion_to_yaw_deg(q)), 2)
+
+            self.update_connection()
+
+        except TransformException:
+            return
+    
     def odom_callback(self, msg):
+        # If TF pose is enabled, do not draw odom pose directly on /map.
+        # /odometry/filtered is often in odom frame, while /map is in map frame.
+        if USE_TF_POSE:
+            return
+
         robot_data["x"] = round(float(msg.pose.pose.position.x), 3)
         robot_data["y"] = round(float(msg.pose.pose.position.y), 3)
         robot_data["yaw"] = round(float(quaternion_to_yaw_deg(msg.pose.pose.orientation)), 2)
@@ -649,7 +676,7 @@ class Part3WebUINode(Node):
 
     def scan_callback(self, msg):
         # Downsample scan data to reduce browser load.
-        step = 5
+        step = 10
         ranges = []
 
         for r in msg.ranges[::step]:
@@ -701,7 +728,7 @@ class Part3WebUINode(Node):
                 return
 
             # Resize image for browser performance.
-            max_width = 640
+            max_width = 320
             if width > max_width:
                 scale = max_width / width
                 new_width = int(width * scale)
@@ -711,7 +738,7 @@ class Part3WebUINode(Node):
             success, jpeg = cv2.imencode(
                 ".jpg",
                 image_np,
-                [cv2.IMWRITE_JPEG_QUALITY, 75]
+                [cv2.IMWRITE_JPEG_QUALITY, 50]
             )
 
             if not success:
@@ -768,9 +795,6 @@ class Part3WebUINode(Node):
         greek_list = pose_array_to_list(msg)
 
         robot_data["greek_markers"] = greek_list
-
-        # For now, also show Greek markers in the general marker list.
-        # If your team later adds /part3/perception/markers, we can separate this.
         robot_data["markers"] = greek_list
 
         self.update_connection()
@@ -792,78 +816,46 @@ class Part3WebUINode(Node):
         self.cmd_vel_pub.publish(msg)
 
     def publish_stop(self):
-        """
-        Publish one zero-velocity command.
-        The safety timer calls this repeatedly when stop hold or auto E-stop is active.
-        """
         msg = Twist()
         msg.linear.x = 0.0
-        msg.linear.y = 0.0
-        msg.linear.z = 0.0
-        msg.angular.x = 0.0
-        msg.angular.y = 0.0
         msg.angular.z = 0.0
         self.cmd_vel_pub.publish(msg)
 
-    def trigger_auto_estop(self, reason):
-        """
-        Automatic E-Stop:
-        - activates stop hold
-        - continuously publishes zero velocity through the safety timer
-        - updates UI state and publishes /part3/safety/estop_event
-        """
-        global auto_estop_active
-        global stop_hold_active
-        global manual_motion_active
+    def manual_timeout_check(self):
+        global last_manual_command_time
 
-        auto_estop_active = True
-        stop_hold_active = True
-        manual_motion_active = False
+        if last_manual_command_time <= 0.0:
+            return
 
-        self.publish_stop()
-
-        state_msg = String()
-        state_msg.data = "WAYPOINT_FAILED"
-        self.system_state_pub.publish(state_msg)
-
-        event_msg = String()
-        event_msg.data = (
-            f"auto_estop timestamp={time.time():.3f} "
-            f"source=web_ui reason={reason}"
-        )
-        self.estop_event_pub.publish(event_msg)
-
-        robot_data["system_state"] = "WAYPOINT_FAILED"
-        robot_data["last_estop_event"] = event_msg.data
-        robot_data["command_status"] = "Auto E-Stop: " + reason
-        robot_data["map_status"] = "Robot stopped by automatic E-Stop"
-
-        return event_msg.data
-
-    def set_stop_hold(self, active):
-        """
-        Stop Robot works as a dead-man hold switch.
-        When active, keyboard motion commands are blocked and zero velocity is published continuously.
-        """
-        global stop_hold_active
-        global manual_motion_active
-
-        stop_hold_active = bool(active)
-
-        if stop_hold_active:
-            manual_motion_active = False
+        if time.time() - last_manual_command_time > self.manual_timeout_sec:
             self.publish_stop()
-            robot_data["command_status"] = "Stop hold active"
-            robot_data["map_status"] = "Robot held by Stop Robot switch"
-        else:
-            robot_data["command_status"] = "Stop hold cleared"
-            robot_data["map_status"] = "Stop hold cleared"
 
-        return stop_hold_active
+    def call_start_mapping_service(self):
+        if not self.start_mapping_client.wait_for_service(timeout_sec=1.0):
+            return False, "Start mapping service is not available"
 
-    def clear_auto_estop(self):
+        request = Trigger.Request()
+        future = self.start_mapping_client.call_async(request)
+
+        start_time = time.time()
+        timeout_sec = 3.0
+
+        while not future.done():
+            if time.time() - start_time > timeout_sec:
+                return False, "Start mapping service call timed out"
+            time.sleep(0.05)
+
+        result = future.result()
+
+        if result is None:
+            return False, "Start mapping service returned no result"
+
+        return bool(result.success), result.message
+
+    def publish_waypoints_from_json(self, waypoints):
         """
-        Clear both stop hold and automatic E-stop.
+        Publish loaded JSON waypoints as geometry_msgs/PoseArray.
+        Frame is map.
         """
         msg = PoseArray()
         msg.header.frame_id = "map"
@@ -891,28 +883,37 @@ class Part3WebUINode(Node):
 
     def call_start_waypoint_service(self):
         """
-        Call:
-        ros2 service call /part3/mapping/start std_srvs/srv/Trigger {}
+        Optional:
+        Call /part3/waypoint/start if it exists.
+        If it does not exist, publishing selected_goals still succeeds.
         """
-        if not self.start_mapping_client.wait_for_service(timeout_sec=1.0):
-            return False, "Start mapping service is not available"
+        self.get_logger().info(f"Calling waypoint service: {START_WAYPOINT_SERVICE}")
+        if not self.start_waypoint_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(f"Waypoint service unavailable: {START_WAYPOINT_SERVICE}")
+            return False, "Start waypoint service is not available"
 
         request = Trigger.Request()
-        future = self.start_mapping_client.call_async(request)
+        future = self.start_waypoint_client.call_async(request)
 
         start_time = time.time()
-        timeout_sec = 3.0
+        timeout_sec = 15.0
 
         while not future.done():
             if time.time() - start_time > timeout_sec:
-                return False, "Start mapping service call timed out"
+                self.get_logger().warn("Waypoint service call timed out")
+                return False, "Start waypoint service call timed out"
             time.sleep(0.05)
 
         result = future.result()
 
         if result is None:
-            return False, "Start mapping service returned no result"
+            self.get_logger().warn("Waypoint service returned no result")
+            return False, "Start waypoint service returned no result"
 
+        if result.success:
+            self.get_logger().info(f"Waypoint service accepted: {result.message}")
+        else:
+            self.get_logger().warn(f"Waypoint service failed: {result.message}")
         return bool(result.success), result.message
 
     def send_nav2_waypoints(self, waypoints):
@@ -1004,17 +1005,19 @@ def filtered_markers():
             "markers": []
         }), 404
 
-    robot_data["markers"] = markers
-    robot_data["greek_markers"] = [
+    greek_markers = [
         marker for marker in markers
         if marker.get("type") == "greek"
     ]
+    robot_data["markers"] = greek_markers
+    robot_data["greek_markers"] = greek_markers
 
     return jsonify({
         "success": True,
         "path": MARKER_JSON_PATH,
-        "count": len(markers),
-        "markers": markers
+        "count": len(greek_markers),
+        "markers": greek_markers,
+        "all_marker_count": len(markers)
     })
 
 
@@ -1031,6 +1034,9 @@ def start_mapping():
     if success:
         robot_data["system_state"] = "MAPPING"
         robot_data["map_status"] = "Mapping start command sent"
+        robot_data["command_status"] = "Start mapping service success"
+    else:
+        robot_data["command_status"] = "Start mapping failed: " + message
 
     return jsonify({
         "success": success,
@@ -1046,36 +1052,19 @@ def start_nav2_waypoints():
             "message": "ROS2 node is not ready"
         }), 503
 
-    markers, error = load_filtered_markers()
-
-    if error is not None:
-        robot_data["command_status"] = "Waypoint file missing"
-        return jsonify({
-            "success": False,
-            "message": error,
-            "markers": []
-        }), 404
-
-    greek_markers = [
-        marker for marker in markers
-        if str(marker.get("type", "")).strip().lower() == "greek"
-    ]
-
-    if len(greek_markers) == 0:
-        robot_data["command_status"] = "No greek waypoints"
-        return jsonify({
-            "success": False,
-            "message": "No confirmed greek marker waypoints available",
-            "markers": []
-        }), 400
-
-    robot_data["markers"] = greek_markers
-    robot_data["greek_markers"] = greek_markers
-
-    # Use the waypoint service rather than sending marker coordinates straight
-    # to Nav2. The service offsets each goal away from the marker obstacle and
-    # clears the global costmap before planning.
+    # The waypoint service owns marker loading/filtering. The UI button should
+    # behave like: ros2 service call /part3/waypoint/start std_srvs/srv/Trigger {}
     success, message = web_ui_node.call_start_waypoint_service()
+
+    markers, error = load_filtered_markers()
+    greek_markers = []
+    if error is None:
+        greek_markers = [
+            marker for marker in markers
+            if str(marker.get("type", "")).strip().lower() == "greek"
+        ]
+        robot_data["markers"] = greek_markers
+        robot_data["greek_markers"] = greek_markers
 
     if success:
         robot_data["system_state"] = "WAYPOINT_DRIVE"
@@ -1246,16 +1235,8 @@ def manual_control():
         "linear_x": 0.3,
         "angular_z": 0.0
     }
-
-    Safety behavior:
-    - stop_hold_active or auto_estop_active blocks all non-zero motion commands.
-    - while a motion key is held, the frontend should resend commands continuously.
-    - if that heartbeat stops, manual_timeout_check() triggers automatic E-Stop.
     """
     global last_manual_command_time
-    global stop_hold_active
-    global auto_estop_active
-    global manual_motion_active
 
     data = request.get_json(silent=True)
 
@@ -1275,37 +1256,15 @@ def manual_control():
     linear_x = max(min(linear_x, max_linear), -max_linear)
     angular_z = max(min(angular_z, max_angular), -max_angular)
 
-    is_motion_command = abs(linear_x) > 1e-4 or abs(angular_z) > 1e-4
-
-    # Stop hold / Auto E-Stop blocks motion commands.
-    # Stop commands are still allowed.
-    if (stop_hold_active or auto_estop_active) and is_motion_command:
-        if web_ui_node is not None:
-            web_ui_node.publish_stop()
-
-        return jsonify({
-            "success": False,
-            "message": "Stop hold or Auto E-Stop is active",
-            "stop_hold_active": stop_hold_active,
-            "auto_estop_active": auto_estop_active
-        }), 423
-
     last_manual_command_time = time.time()
-    manual_motion_active = is_motion_command
 
     if web_ui_node is not None:
-        if is_motion_command:
-            web_ui_node.publish_cmd_vel(linear_x, angular_z)
-        else:
-            web_ui_node.publish_stop()
+        web_ui_node.publish_cmd_vel(linear_x, angular_z)
 
         return jsonify({
             "success": True,
             "linear_x": linear_x,
-            "angular_z": angular_z,
-            "manual_motion_active": manual_motion_active,
-            "stop_hold_active": stop_hold_active,
-            "auto_estop_active": auto_estop_active
+            "angular_z": angular_z
         })
 
     return jsonify({
@@ -1316,49 +1275,16 @@ def manual_control():
 
 @app.route("/api/stop", methods=["POST"])
 def stop_robot():
-    """
-    Stop Robot is a hold switch:
-    - activates stop_hold_active
-    - safety timer keeps publishing /cmd_vel = 0
-    - keyboard motion is blocked until /api/clear_stop_hold is called
-    """
     global last_manual_command_time
 
     last_manual_command_time = time.time()
 
-    if web_ui_node is None:
-        return jsonify({
-            "success": False,
-            "message": "ROS2 node is not ready"
-        }), 503
-
-    active = web_ui_node.set_stop_hold(True)
+    if web_ui_node is not None:
+        web_ui_node.publish_stop()
 
     return jsonify({
         "success": True,
-        "message": "Stop hold activated",
-        "stop_hold_active": active
-    })
-
-
-@app.route("/api/clear_stop_hold", methods=["POST"])
-def clear_stop_hold():
-    """
-    Clear Stop Hold and Auto E-Stop.
-    """
-    if web_ui_node is None:
-        return jsonify({
-            "success": False,
-            "message": "ROS2 node is not ready"
-        }), 503
-
-    web_ui_node.clear_auto_estop()
-
-    return jsonify({
-        "success": True,
-        "message": "Stop hold / Auto E-Stop cleared",
-        "stop_hold_active": False,
-        "auto_estop_active": False
+        "message": "Stop command published"
     })
 
 

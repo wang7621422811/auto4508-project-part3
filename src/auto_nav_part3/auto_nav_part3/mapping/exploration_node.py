@@ -121,6 +121,12 @@ class ExplorationNode(Node):
         self.declare_parameter('top_n_candidates', 3)
         # 评分权重：score = alpha*(1/dist) + (1-alpha)*size，0.99 极度偏近
         self.declare_parameter('alpha', 0.99)
+        # 探索完成后返回真实启动点，而不是用于 coverage/search 的 home 中心点。
+        self.declare_parameter('return_to_start_pose', True)
+        # coverage=done 会触发 map_manager 保存地图；稍等再发 home goal，避免 Nav2/SLAM 瞬时负载竞争。
+        self.declare_parameter('return_home_delay_sec', 3.0)
+        self.declare_parameter('return_home_max_retries', 2)
+        self.declare_parameter('return_home_retry_delay_sec', 3.0)
 
         # get_parameter().value 在 Pylance 下推断为 Unknown|None，用 `or default` 消除警告
         # （运行时 declare_parameter 已保证非 None）
@@ -137,6 +143,12 @@ class ExplorationNode(Node):
         self._preprocess_iters: int   = int(self.get_parameter('preprocess_iters').value or 5)
         self._top_n: int              = int(self.get_parameter('top_n_candidates').value or 3)
         self._alpha: float            = float(self.get_parameter('alpha').value or 0.99)
+        self._return_to_start: bool   = bool(self.get_parameter('return_to_start_pose').value)
+        self._return_home_delay: float = float(self.get_parameter('return_home_delay_sec').value or 3.0)
+        self._return_home_max_retries: int = int(self.get_parameter('return_home_max_retries').value or 2)
+        self._return_home_retry_delay: float = float(
+            self.get_parameter('return_home_retry_delay_sec').value or 3.0
+        )
 
         # ── 内部状态 ──────────────────────────────────────────────────────────
         self._active: bool            = self._auto_start
@@ -175,6 +187,9 @@ class ExplorationNode(Node):
 
         self._home_initialized: bool  = not self._auto_set_home
         self._exploration_done: bool  = False
+        self._start_pose: tuple[float, float] | None = None
+        self._return_home_attempt: int = 0
+        self._return_home_target: tuple[float, float] | None = None
 
         # ── QoS ──────────────────────────────────────────────────────────────
         _map_qos = QoSProfile(
@@ -230,6 +245,9 @@ class ExplorationNode(Node):
             self._blacklist.clear()
             self._visited.clear()
             self._stuck_cycles = 0
+            self._start_pose = None
+            self._return_home_attempt = 0
+            self._return_home_target = None
         elif not msg.data and self._active:
             self.get_logger().info('[Enable] 停止探索')
             self._active = False
@@ -256,6 +274,14 @@ class ExplorationNode(Node):
         if self._map is None:
             self.get_logger().info('Waiting for /map...', throttle_duration_sec=5.0)
             return
+
+        if self._start_pose is None:
+            pose = self._robot_pose()
+            if pose is not None:
+                self._start_pose = pose
+                self.get_logger().info(
+                    f'[Start] 记录启动点 ({pose[0]:.2f}, {pose[1]:.2f})'
+                )
 
         # ── 初始化 home ───────────────────────────────────────────────────────
         if not self._home_initialized:
@@ -809,24 +835,49 @@ class ExplorationNode(Node):
         self._pub_status(coverage, [], done=True)
         self._active           = False
         self._exploration_done = True
+        self._checking_path    = False
+        self._path_check_id   += 1
         self._return_home()
 
     def _return_home(self) -> None:
-        """探索完成后自动导航回机器人启动位置（home）。"""
+        """探索完成后自动导航回启动位置。"""
+        self._return_home_attempt = 0
+        if self._return_to_start and self._start_pose is not None:
+            self._return_home_target = self._start_pose
+        else:
+            self._return_home_target = (self._home_x, self._home_y)
+            if self._return_to_start:
+                self.get_logger().warn('[Home] 未记录到启动点，退回使用配置 home 坐标')
+
+        self.get_logger().info(
+            f'[Home] {self._return_home_delay:.1f}s 后返回 '
+            f'({self._return_home_target[0]:.2f}, {self._return_home_target[1]:.2f})'
+        )
+        self._call_later(self._return_home_delay, self._send_home_goal)
+
+    def _send_home_goal(self) -> None:
+        """发送或重试返回起点 goal。"""
+        if self._return_home_target is None:
+            return
+
         if not self._nav_server_ready:
             if not self._nav_client.wait_for_server(timeout_sec=2.0):
                 self.get_logger().warn('[Home] /navigate_to_pose 不可用，无法返回起点')
+                self._schedule_home_retry()
                 return
 
+        home_x, home_y = self._return_home_target
+        self._return_home_attempt += 1
         self.get_logger().info(
-            f'[Home] 返回起点 ({self._home_x:.2f}, {self._home_y:.2f})'
+            f'[Home] 返回起点 attempt={self._return_home_attempt}/'
+            f'{self._return_home_max_retries + 1} ({home_x:.2f}, {home_y:.2f})'
         )
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = PoseStamped()
         goal_msg.pose.header.frame_id = 'map'
         goal_msg.pose.header.stamp    = self.get_clock().now().to_msg()
-        goal_msg.pose.pose.position.x = self._home_x
-        goal_msg.pose.pose.position.y = self._home_y
+        goal_msg.pose.pose.position.x = home_x
+        goal_msg.pose.pose.position.y = home_y
         goal_msg.pose.pose.orientation.w = 1.0
 
         future = self._nav_client.send_goal_async(goal_msg)
@@ -834,22 +885,54 @@ class ExplorationNode(Node):
 
     def _home_resp_cb(self, future) -> None:
         """_return_home 目标接受回调：等待导航结果。"""
-        goal_handle = future.result()
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self.get_logger().warn(f'[Home] 返回请求发送失败: {exc}')
+            self._schedule_home_retry()
+            return
         if not goal_handle.accepted:
             self.get_logger().warn('[Home] Nav2 拒绝返回请求')
+            self._schedule_home_retry()
             return
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._home_result_cb)
 
     def _home_result_cb(self, future) -> None:
         """_return_home 导航结果回调：记录成功或失败。"""
-        status = future.result().status
+        try:
+            status = future.result().status
+        except Exception as exc:
+            self.get_logger().warn(f'[Home] 返回结果获取失败: {exc}')
+            self._schedule_home_retry()
+            return
+        home_x, home_y = self._return_home_target or (self._home_x, self._home_y)
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info(
-                f'[Home✓] 已到达起点 ({self._home_x:.2f}, {self._home_y:.2f})'
+                f'[Home✓] 已到达起点 ({home_x:.2f}, {home_y:.2f})'
             )
         else:
             self.get_logger().warn(f'[Home✗] 返回起点失败 (status={status})')
+            self._schedule_home_retry()
+
+    def _schedule_home_retry(self) -> None:
+        if self._return_home_attempt > self._return_home_max_retries:
+            self.get_logger().warn('[Home] 返回起点重试次数已用完')
+            return
+        self.get_logger().info(
+            f'[Home] {self._return_home_retry_delay:.1f}s 后重试返回起点'
+        )
+        self._call_later(self._return_home_retry_delay, self._send_home_goal)
+
+    def _call_later(self, delay_sec: float, callback) -> None:
+        """创建一次性 timer。"""
+        timer_holder = {}
+
+        def _fire() -> None:
+            timer_holder['timer'].cancel()
+            callback()
+
+        timer_holder['timer'] = self.create_timer(max(0.1, delay_sec), _fire)
 
     def _pub_status(
         self,

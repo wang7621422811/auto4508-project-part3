@@ -42,7 +42,7 @@ waypoint_service.py — M_W 路点快速驾驶服务 (C_W.1)
 参数（config/waypoint.yaml）
 ────────────────────────────
   home_coordinate  str    ''      "x,y" 字符串；空 = 捕获当前机器人位置
-  marker_types     str   'all'   从文件加载的类型：'all' / 'greek' / 'colour'
+  marker_types     str   'greek' 从文件加载的类型：'all' / 'greek' / 'colour'
   nav_timeout_sec  float 120.0   整趟导航超时（秒）
   marker_wait_sec  float   3.0   等待 greek_markers 话题的最长秒数
   waypoints_file   str    ''     第一优先：直接读此 JSON 文件；空时退回话题
@@ -173,7 +173,7 @@ class WaypointServiceNode(Node):
         # home_coordinate: "x,y" 字符串；空 = 服务触发时捕获当前里程计位置
         self.declare_parameter('home_coordinate',  '')
         # marker_types: 从 JSON 文件加载的路点类型 — 'all' / 'greek' / 'colour'
-        self.declare_parameter('marker_types',    'all')
+        self.declare_parameter('marker_types',    'greek')
         # approach_dist: 在每个 marker 前方停车的距离（米），避开 costmap 障碍区
         self.declare_parameter('approach_dist',    0.5)
         self.declare_parameter('nav_timeout_sec', 120.0)
@@ -440,17 +440,46 @@ class WaypointServiceNode(Node):
             else:
                 candidates = [
                     item for item in data
-                    if item.get('type') == self._marker_types
+                    if str(item.get('type', '')).strip().lower() == self._marker_types
                     and 'x' in item and 'y' in item
                 ]
 
             skipped_unconfirmed = sum(
                 1 for item in candidates if not item.get('confirmed', True)
             )
+            confirmed = [
+                item for item in candidates
+                if item.get('confirmed', True)
+            ]
+
+            # Match the UI behavior: one waypoint per marker label, keeping the
+            # strongest observation. Otherwise repeated alpha/psi detections turn
+            # into multiple navigation goals even after type filtering.
+            grouped: dict[tuple[str, str], dict] = {}
+            for index, item in enumerate(confirmed):
+                key = (
+                    str(item.get('type', self._marker_types)).strip().lower(),
+                    str(item.get('label', item.get('name', index))).strip().lower(),
+                )
+                current = grouped.get(key)
+                if current is None:
+                    grouped[key] = item
+                    continue
+
+                item_score = (
+                    int(item.get('count', 0)),
+                    float(item.get('confidence', 0.0)),
+                )
+                current_score = (
+                    int(current.get('count', 0)),
+                    float(current.get('confidence', 0.0)),
+                )
+                if item_score > current_score:
+                    grouped[key] = item
+
             pts = [
                 (float(item['x']), float(item['y']))
-                for item in candidates
-                if item.get('confirmed', True)
+                for item in grouped.values()
             ]
 
             self.get_logger().info(

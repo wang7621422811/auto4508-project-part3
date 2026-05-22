@@ -91,3 +91,14 @@ exploration_node:
     # selectFrontier 评分权重：score = alpha*(1/dist) + (1-alpha)*size
     # 参考代码 alpha=0.99：极度偏近，避免机器人舍近求远追大 frontier。
     alpha: 0.99
+
+    # ── 探索完成后返回起点 ─────────────────────────────────────────────────
+    # true：节点启动探索时从 TF 记录真实机器人位置，完成后返回该点。
+    # false：完成后返回上面的 home_x/home_y（当前为 arena 中心）。
+    return_to_start_pose: true
+
+    # coverage=done 会同时触发 map_manager 保存地图；延迟几秒再发 Nav2 goal，
+    # 避免 planner/bt_navigator 在保存瞬间负载较高而拒绝或超时。
+    return_home_delay_sec: 3.0
+    return_home_max_retries: 2
+    return_home_retry_delay_sec: 3.0

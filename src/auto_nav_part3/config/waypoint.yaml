@@ -15,7 +15,7 @@
 #                        launch 文件会把绝对路径注入此参数，无需手动改。
 # =============================================================================
 
-waypoint_service:
+part3_waypoint_service:
   ros__parameters:
     # home_coordinate: 字符串，格式 "x,y"（例如 "-3.0,0.0"）
     #   非空 → 直接解析为固定 home 坐标（适合 spawn 位置已知的情况）

@@ -255,7 +255,7 @@ class PerceptionAdapterNode(Node):
 
         for entry in self._markers:
             # 未确认条目不发布：防止单次误检污染下游路点规划
-            if entry.count < self._min_confirm and entry.confidence < 0.90:
+            if not self._should_export_marker(entry):
                 continue
             pose = Pose()
             pose.position    = Point(x=entry.x, y=entry.y, z=0.0)
@@ -270,6 +270,16 @@ class PerceptionAdapterNode(Node):
     # ════════════════════════════════════════════════════════════════════
     # 工具
     # ════════════════════════════════════════════════════════════════════
+
+    def _should_export_marker(self, entry: _MarkerEntry) -> bool:
+        """最终导出过滤：Greek 单次识别不发布、不写入 markers.json。
+
+        注意这里不从 self._markers 删除记录，运行中 count 仍可从 1 累加到 2。
+        如果之后不需要这条硬过滤，移除本函数中的 greek/count 判断即可。
+        """
+        if entry.marker_type == 'greek' and entry.count <= 1:
+            return False
+        return entry.count >= self._min_confirm or entry.confidence >= 0.90
 
     @staticmethod
     def _parse_event(data: str) -> Optional[dict]:
@@ -309,8 +319,9 @@ class PerceptionAdapterNode(Node):
     def _save_markers(self) -> None:
         """把当前 _markers 列表序列化到 markers.json，写失败只打 warn 不崩溃。
         confirmed=true 表示 count>=min_confirm_count 或 confidence>=0.90，
-        未确认条目也保存（供跨重启累计 count），但 confirmed=false 供下游过滤。"""
+        Greek 单次识别不保存，避免 eta 等单帧误检污染最终路点。"""
         try:
+            os.makedirs(os.path.dirname(self._markers_json_path), exist_ok=True)
             data = [
                 {
                     'type':       e.marker_type,
@@ -323,6 +334,7 @@ class PerceptionAdapterNode(Node):
                     'confirmed':  (e.count >= self._min_confirm or e.confidence >= 0.90),
                 }
                 for e in self._markers
+                if self._should_export_marker(e)
             ]
             with open(self._markers_json_path, 'w', encoding='utf-8') as fh:
                 json.dump(data, fh, indent=2, ensure_ascii=False)
