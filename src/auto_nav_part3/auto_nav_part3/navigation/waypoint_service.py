@@ -214,7 +214,18 @@ class WaypointServiceNode(Node):
             _ENABLE_QOS,
         )
 
-        # ── 订阅 /odometry/filtered：缓存机器人当前位置，服务触发时作为 home ──
+        # ── 订阅 exploration 启动时保存的 home（map 帧）──────────────────
+        self._saved_home: Optional[tuple[float, float]] = None
+        self._saved_home_lock = threading.Lock()
+        self.create_subscription(
+            PoseStamped,
+            '/part3/home_pose',
+            self._on_home_pose,
+            _ENABLE_QOS,
+            callback_group=self._cbg,
+        )
+
+        # ── 订阅 /odometry/filtered：仅作为没有 saved home 时的 fallback ──
         self._odom_x: float = 0.0
         self._odom_y: float = 0.0
         self._odom_received: bool = False
@@ -296,6 +307,22 @@ class WaypointServiceNode(Node):
             self._odom_y = msg.pose.pose.position.y
             self._odom_received = True
 
+    def _on_home_pose(self, msg: PoseStamped) -> None:
+        if msg.header.frame_id and msg.header.frame_id != 'map':
+            self.get_logger().warn(
+                f'[WaypointService] 忽略非 map 帧 home_pose: {msg.header.frame_id}'
+            )
+            return
+        with self._saved_home_lock:
+            self._saved_home = (
+                msg.pose.position.x,
+                msg.pose.position.y,
+            )
+        self.get_logger().info(
+            f'[WaypointService] 收到 exploration home(map): '
+            f'({msg.pose.position.x:.3f}, {msg.pose.position.y:.3f})'
+        )
+
     def _on_greek_markers(self, msg: PoseArray) -> None:
         with self._markers_lock:
             self._greek_markers = [(p.position.x, p.position.y) for p in msg.poses]
@@ -331,19 +358,28 @@ class WaypointServiceNode(Node):
                 f'[WaypointService] 使用固定 home: {home}'
             )
         else:
-            with self._odom_lock:
-                odom_ok = self._odom_received
-                home = (self._odom_x, self._odom_y)
-            if odom_ok:
+            with self._saved_home_lock:
+                saved_home = self._saved_home
+            if saved_home is not None:
+                home = saved_home
                 self.get_logger().info(
-                    f'[WaypointService] 动态 home（当前里程计位置）: '
+                    f'[WaypointService] 使用 exploration 启动 home(map): '
                     f'({home[0]:.3f}, {home[1]:.3f})'
                 )
             else:
-                self.get_logger().warn(
-                    '[WaypointService] 未收到 /odometry/filtered，home 将使用 (0.0, 0.0)，'
-                    '建议设置 home_coordinate 参数或等待里程计就绪'
-                )
+                with self._odom_lock:
+                    odom_ok = self._odom_received
+                    home = (self._odom_x, self._odom_y)
+                if odom_ok:
+                    self.get_logger().warn(
+                        f'[WaypointService] 未收到 /part3/home_pose，fallback 使用 odom 坐标: '
+                        f'({home[0]:.3f}, {home[1]:.3f})；建议先调用 /part3/mapping/start'
+                    )
+                else:
+                    self.get_logger().warn(
+                        '[WaypointService] 未收到 /part3/home_pose 或 /odometry/filtered，'
+                        'home 将使用 (0.0, 0.0)'
+                    )
 
         # ── TSP 排序 ──────────────────────────────────────────────────────
         order = _best_order(home, markers) if len(markers) > 1 else list(markers)
@@ -617,13 +653,24 @@ class WaypointServiceNode(Node):
             skipped=skipped,
             status='returning_home',
         )
-        self.get_logger().info(
-            f'[WaypointService] 阶段2 返回 home ({home[0]:.2f}, {home[1]:.2f})'
-        )
-        home_pose = self._build_poses([home])[0]  # 单点 → yaw=0（朝 +x，与 spawn 一致）
-        ok = self._run_nav([home_pose], timeout=60.0)
+        home_candidates = self._home_return_candidates(home)
+        ok = False
+        reached_home = home
+        for idx, candidate in enumerate(home_candidates):
+            self.get_logger().info(
+                f'[WaypointService] 阶段2 返回 home candidate {idx + 1}/{len(home_candidates)} '
+                f'({candidate[0]:.2f}, {candidate[1]:.2f})'
+            )
+            home_pose = self._build_poses([candidate])[0]
+            if self._run_nav([home_pose], timeout=60.0):
+                ok = True
+                reached_home = candidate
+                break
         if ok:
-            self.get_logger().info('[WaypointService] 已返回 home，任务完成')
+            self.get_logger().info(
+                f'[WaypointService] 已返回 home 区域 '
+                f'({reached_home[0]:.2f}, {reached_home[1]:.2f})，任务完成'
+            )
             self._publish_waypoint_progress(
                 points=planned_points,
                 active_index=len(order),
@@ -636,7 +683,8 @@ class WaypointServiceNode(Node):
             self.get_logger().warn(
                 f'[WaypointService] 路点导航完成，但无法返回 home '
                 f'({home[0]:.2f}, {home[1]:.2f})。'
-                'home 可能在地图范围外，请在 waypoint.yaml 设置 home_coordinate。'
+                '已尝试 home 周围候选点；请确认 /part3/home_pose 在可通行区域，'
+                '或在 waypoint.yaml 设置 home_coordinate。'
             )
             self._publish_waypoint_progress(
                 points=planned_points,
@@ -705,6 +753,25 @@ class WaypointServiceNode(Node):
             f'[WaypointService] 导航未成功，GoalStatus={result.status}'
         )
         return False
+
+    def _home_return_candidates(
+        self,
+        home: tuple[float, float],
+    ) -> list[tuple[float, float]]:
+        """Return candidate home goals around the saved home point.
+
+        The exact saved pose can sit in unknown/inflated cells after SLAM map
+        updates. Trying a small ring around it makes "return home" mean
+        returning to the start area while still preferring the exact home.
+        """
+        candidates = [home]
+        for radius in (0.4, 0.8, 1.2):
+            for yaw in (0.0, math.pi / 2.0, math.pi, -math.pi / 2.0):
+                candidates.append((
+                    home[0] + radius * math.cos(yaw),
+                    home[1] + radius * math.sin(yaw),
+                ))
+        return candidates
 
     # ════════════════════════════════════════════════════════════════════
     # 辅助方法

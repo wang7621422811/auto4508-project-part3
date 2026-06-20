@@ -21,10 +21,14 @@ response.success 语义：True = "命令已接受"，不代表探索已完成。
 """
 
 import rclpy
+import threading
+import time
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+from tf2_ros import Buffer, TransformException, TransformListener
 
 # TRANSIENT_LOCAL（相当于 latched topic）：发布者保留最后一条消息，
 # 新加入的订阅者（如延迟 45s 启动的 exploration_node）可立即收到当前状态。
@@ -51,6 +55,9 @@ class MappingService(Node):
         # TRANSIENT_LOCAL：exploration_node 延迟 45s 启动，若用默认 VOLATILE，
         # enable=true 消息会在订阅者加入前丢失，导致探索永远无法启动。
         self._enable_pub = self.create_publisher(Bool, '/part3/exploration/enable', _ENABLE_QOS)
+        self._home_pub = self.create_publisher(PoseStamped, '/part3/home_pose', _ENABLE_QOS)
+        self._tf_buf = Buffer()
+        self._tf_listener = TransformListener(self._tf_buf, self)
 
         # ── 订阅者：监听探索进度 ──────────────────────────────────────────────
         # exploration_node 周期发布 "coverage=68% frontiers=3 area=15x15"
@@ -74,6 +81,11 @@ class MappingService(Node):
             return response
 
         self._active = True
+        threading.Thread(
+            target=self._publish_home_pose_with_retry,
+            daemon=True,
+            name='capture_home_pose',
+        ).start()
         self._pub_state('MAPPING')
         self._pub_enable(True)   # → exploration_node 开始探索
 
@@ -109,6 +121,43 @@ class MappingService(Node):
         msg = Bool()
         msg.data = enabled
         self._enable_pub.publish(msg)
+
+    def _publish_home_pose(self):
+        try:
+            transform = self._tf_buf.lookup_transform(
+                'map',
+                'base_link',
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0),
+            )
+        except TransformException as exc:
+            self.get_logger().warn(f'[Home] TF map->base_link unavailable: {exc}')
+            return
+
+        msg = PoseStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.position.x = transform.transform.translation.x
+        msg.pose.position.y = transform.transform.translation.y
+        msg.pose.position.z = 0.0
+        msg.pose.orientation = transform.transform.rotation
+        self._home_pub.publish(msg)
+        self.get_logger().info(
+            f'[Home] saved exploration home in map frame: '
+            f'({msg.pose.position.x:.3f}, {msg.pose.position.y:.3f})'
+        )
+        return True
+
+    def _publish_home_pose_with_retry(self):
+        for attempt in range(1, 11):
+            if self._publish_home_pose():
+                return
+            self.get_logger().warn(f'[Home] capture retry {attempt}/10')
+            time.sleep(0.5)
+        self.get_logger().error(
+            '[Home] failed to capture exploration home; waypoint return will need '
+            'home_coordinate or a later /part3/home_pose publisher'
+        )
 
 
 def main(args=None):
