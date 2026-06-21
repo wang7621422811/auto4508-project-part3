@@ -1,0 +1,570 @@
+<?xml version="1.0" ?>
+<!--
+  discovery_15x15.sdf
+  Open flat arena with a 15 x 15 m white boundary rectangle drawn on the ground.
+  No surrounding walls — designed for autonomous-discovery tasks.
+-->
+<sdf version="1.9">
+  <world name="discovery_15x15">
+
+    <!-- ── Physics ──────────────────────────────────────────────────── -->
+    <physics name="default_physics" default="true" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- ── Required Gazebo Sim system plugins ───────────────────────── -->
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+            name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-contact-system"
+            name="gz::sim::systems::Contact"/>
+
+    <!-- ── Lighting ─────────────────────────────────────────────────── -->
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.85 1</diffuse>
+      <specular>0.2  0.2  0.2  1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- ── Ground plane (dark grey, 100 × 100 m) ────────────────────── -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.4</mu>          <!-- 主摩擦系数，草地约 0.3-0.5 -->
+                <mu2>0.4</mu2>        <!-- 横向摩擦 -->
+                <fdir1>1 0 0</fdir1>  <!-- 摩擦方向（各向异性效果） -->
+                <slip1>0</slip1>   <!-- 纵向滑移 (0=无滑移) -->
+                <slip2>0</slip2>   <!-- 横向滑移 -->
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.35 0.35 0.35 1</ambient>
+            <diffuse>0.35 0.35 0.35 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      ── 15 × 15 m boundary rectangle (white lines) ──────────────────
+
+      The rectangle spans x ∈ [-7.5, 7.5], y ∈ [-7.5, 7.5].
+      Each line is a flat white box:  length × 0.05 m wide × 0.003 m tall.
+      Placed at z = 0.0015 (half the thickness) to sit flush on the ground.
+
+          top  ┌─────────────────┐  y = +7.5
+               │                 │
+        left   │                 │  right
+               │                 │
+      bottom   └─────────────────┘  y = -7.5
+             x = -7.5         x = +7.5
+    -->
+
+    <!-- Bottom line  (y = -7.5) -->
+    <model name="line_bottom">
+      <static>true</static>
+      <pose>0 -7.5 0.0015 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>15.05 0.05 0.003</size></box></geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+            <emissive>0.2 0.2 0.2 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Top line  (y = +7.5) -->
+    <model name="line_top">
+      <static>true</static>
+      <pose>0 7.5 0.0015 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>15.05 0.05 0.003</size></box></geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+            <emissive>0.2 0.2 0.2 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Left line  (x = -7.5) -->
+    <model name="line_left">
+      <static>true</static>
+      <pose>-7.5 0 0.0015 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.05 15.05 0.003</size></box></geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+            <emissive>0.2 0.2 0.2 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Right line  (x = +7.5) -->
+    <model name="line_right">
+      <static>true</static>
+      <pose>7.5 0 0.0015 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.05 15.05 0.003</size></box></geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+            <emissive>0.2 0.2 0.2 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      ── Obstacles (0.5 × 0.5 × 0.6 m boxes) ────────────────────────────────
+      Each box has collision geometry so the SICK GPU LiDAR can detect it.
+      LiDAR scan height ≈ 0.46 m above ground; boxes are 0.6 m tall, so
+      the horizontal scan ray hits every box regardless of exact LiDAR height.
+
+      Layout (top-down view, +Y = up):
+
+          -7.5                   0                    +7.5  x →
+         ┌──────────────────────────────────────────────────┐  +7.5
+         │                    ob_n2                          │
+         │       ob_nw              ob_ne                    │
+         │                                                   │
+         │  ob_w                         ob_e                │
+         │                    ob_c                           │
+         │       ob_sw              ob_se                    │
+         │                    ob_s2                          │
+         └──────────────────────────────────────────────────┘  -7.5
+           ↑ robot spawns here (-7, 0)
+
+      ob_w is the first obstacle the robot sees when it drives forward (+x).
+    -->
+
+    <model name="ob_w">
+      <static>true</static>
+      <pose>-4.5 1.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.8 0.4 0.1 1</ambient>
+            <diffuse>0.8 0.4 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_nw">
+      <static>true</static>
+      <pose>-3.5 3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.2 0.6 0.8 1</ambient>
+            <diffuse>0.2 0.6 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_sw">
+      <static>true</static>
+      <pose>-3.5 -3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.2 0.6 0.8 1</ambient>
+            <diffuse>0.2 0.6 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_n2">
+      <static>true</static>
+      <pose>0.5 5.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.1 0.8 0.3 1</ambient>
+            <diffuse>0.1 0.8 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_s2">
+      <static>true</static>
+      <pose>0.5 -5.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.1 0.8 0.3 1</ambient>
+            <diffuse>0.1 0.8 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_ne">
+      <static>true</static>
+      <pose>4.0 3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.6 0.2 0.8 1</ambient>
+            <diffuse>0.6 0.2 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_se">
+      <static>true</static>
+      <pose>4.0 -3.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.6 0.2 0.8 1</ambient>
+            <diffuse>0.6 0.2 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ob_e">
+      <static>true</static>
+      <pose>6.5 0.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.8 0.4 0.1 1</ambient>
+            <diffuse>0.8 0.4 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 测试用彩色障碍物：用于验证 colour_detector 识别 yellow / red ──────── -->
+
+    <!-- Yellow obstacle  at (-4.19, -1.77) — 颜色对应 HSV H≈30°，colour_detector 黄色范围 -->
+    <model name="ob_yellow_test">
+      <static>true</static>
+      <pose>-4.19 -1.77 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.95 0.85 0.0 1</ambient>
+            <diffuse>0.95 0.85 0.0 1</diffuse>
+            <specular>0.1  0.1  0.0 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Red obstacle  at (-5.0, 3.0) — 颜色对应 HSV H≈0°，colour_detector 红色范围 -->
+    <model name="ob_red_test">
+      <static>true</static>
+      <pose>-5.0 3.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <material>
+            <ambient>0.85 0.05 0.05 1</ambient>
+            <diffuse>0.85 0.05 0.05 1</diffuse>
+            <specular>0.1  0.0  0.0  1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      ── 希腊字母标识障碍物 (alpha / psi / delta) ───────────────────────────────
+      与普通障碍物尺寸一致 (0.5×0.5×0.6 m)，六面均贴 PNG 贴图供 greek_letter 识别器使用。
+      贴图路径使用 file:// 绝对路径指向 resource/greek_number/ 目录下对应 PNG。
+      选取坐标原则：与已有障碍物中心间距 > 1.5 m，且不超出 ±7.5 m 边界。
+        ob_alpha : ( 2.5,  2.0) —— 中央偏东北
+        ob_psi   : (-1.5,  4.5) —— 北侧中部
+        ob_delta : ( 5.5, -5.0) —— 东南角
+    -->
+
+    <!-- Alpha obstacle  at (2.5, 2.0) -->
+    <model name="ob_alpha">
+      <static>true</static>
+      <pose>2.5 2.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <!-- 纯白底色 + emissive 自发光，确保 ogre 渲染下 HSV value >= 200 -->
+          <material>
+            <ambient>1.0 1.0 1.0 1</ambient>
+            <diffuse>1.0 1.0 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+            <emissive>0.5 0.5 0.5 1</emissive>
+            <pbr>
+              <metal>
+                <albedo_map>file:///home/parallels/workspace/projects/auto4508-project-part3/src/auto_nav_part3/resource/greek_number/alpha.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>1.0</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Psi obstacle  at (-1.5, 4.5) -->
+    <model name="ob_psi">
+      <static>true</static>
+      <pose>-1.5 4.5 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <!-- 纯白底色 + emissive 自发光，确保 ogre 渲染下 HSV value >= 200 -->
+          <material>
+            <ambient>1.0 1.0 1.0 1</ambient>
+            <diffuse>1.0 1.0 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+            <emissive>0.5 0.5 0.5 1</emissive>
+            <pbr>
+              <metal>
+                <albedo_map>file:///home/parallels/workspace/projects/auto4508-project-part3/src/auto_nav_part3/resource/greek_number/psi.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>1.0</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Delta obstacle  at (5.5, -5.0) -->
+    <model name="ob_delta">
+      <static>true</static>
+      <pose>5.5 -5.0 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.6</size></box></geometry>
+          <!-- 纯白底色 + emissive 自发光，确保 ogre 渲染下 HSV value >= 200 -->
+          <material>
+            <ambient>1.0 1.0 1.0 1</ambient>
+            <diffuse>1.0 1.0 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+            <emissive>0.5 0.5 0.5 1</emissive>
+            <pbr>
+              <metal>
+                <albedo_map>file:///home/parallels/workspace/projects/auto4508-project-part3/src/auto_nav_part3/resource/greek_number/delta.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>1.0</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      ── 35 × 35 m enclosure walls ────────────────────────────────────────────
+      Four gray walls forming a closed 35 × 35 m square centered at origin.
+      Each wall: 35.4 m long × 0.2 m thick × 1.5 m tall.
+      The ±0.4 m overrun on north/south fills the corner gaps where walls meet.
+      z-centre = 0.75 m (half of 1.5 m height), flush with the ground plane.
+      Both collision and visual geometry present so LiDAR detects the walls
+      and the robot cannot drive through them.
+
+         -17.5                0                +17.5  x →
+        ┌─────────────────────────────────────────────┐  y = +17.5  (wall_north)
+        │                                             │
+        │                                             │
+        │               15 × 15 arena                 │
+        │                                             │
+        │                                             │
+        └─────────────────────────────────────────────┘  y = -17.5  (wall_south)
+      x=-17.5                                      x=+17.5
+    -->
+
+    <!-- North wall  (y = +17.5) -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>0 17.5 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- South wall  (y = -17.5) -->
+    <model name="wall_south">
+      <static>true</static>
+      <pose>0 -17.5 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>35.4 0.2 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- East wall  (x = +17.5) -->
+    <model name="wall_east">
+      <static>true</static>
+      <pose>17.5 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- West wall  (x = -17.5) -->
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-17.5 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 35.0 1.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Initial GUI camera: top-down, north (+Y) up, east (+X) right ──── -->
+    <!-- pitch=π/2 points camera straight down; yaw=π/2 rotates so +Y is up  perspective -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>0 0 20 0 1.5708 1.5708</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>orthographic</projection_type>
+      </camera>
+    </gui>
+
+  </world>
+</sdf>

@@ -1,0 +1,268 @@
+<mxfile host="app.diagrams.net" modified="2026-06-21" version="24.0.0">
+  <diagram id="part3_ui_dataflow" name="Part3 UI Data Flow">
+    <mxGraphModel dx="1422" dy="762" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1300" pageHeight="560" math="0" shadow="1">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ===== TITLE ===== -->
+        <mxCell id="99" value="Part 3 — UI Data Flow Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="480" width="1110" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LAYER 1: ROS 2 Topics ===== -->
+        <mxCell id="10" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;opacity=20;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="175" height="448" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="ROS 2 Topics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#6c8ebf;strokeColor=#6c8ebf;fontColor=#ffffff;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="30" y="28" width="155" height="32" as="geometry" />
+        </mxCell>
+
+        <mxCell id="20" value="/map (OccupancyGrid)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="70" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="/scan (LaserScan)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="102" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="22" value="/camera/image (Image)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="134" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="23" value="/odometry/filtered (Odometry)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="166" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="24" value="/part3/system/state (String)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="198" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="25" value="/part3/mapping/map_status (String)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="230" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="26" value="/part3/waypoint/plan (String)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="262" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="27" value="/part3/safety/estop_event (String)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="294" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="28" value="/part3/perception/greek_markers (PoseArray)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="326" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="29" value="/plan (nav_msgs/Path)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="358" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="291" value="TF: map → base_link (10 Hz)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="396" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="292" value="/cmd_vel → publish (Twist)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="30" y="428" width="155" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LAYER 2: Part3WebUINode ===== -->
+        <mxCell id="30" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;opacity=20;" vertex="1" parent="1">
+          <mxGeometry x="215" y="20" width="175" height="448" as="geometry" />
+        </mxCell>
+        <mxCell id="31" value="Part3WebUINode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#9673a6;strokeColor=#9673a6;fontColor=#ffffff;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="225" y="28" width="155" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="311" value="rclpy.Node — daemon thread" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=8;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="225" y="62" width="155" height="16" as="geometry" />
+        </mxCell>
+
+        <mxCell id="32" value="map_callback()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="82" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="33" value="scan_callback() → downsample ÷10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="114" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="34" value="camera_callback() → JPEG q50 ≤320 px" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="146" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="35" value="odom_callback() (fallback only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="225" y="178" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="36" value="state / map_status / estop callbacks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="210" width="155" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="37" value="TF lookup timer 10 Hz&#xa;map → base_link → x, y, yaw" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="242" width="155" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="38" value="manual_timeout_check 10 Hz&#xa;dead-man timer 0.6 s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="284" width="155" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="39" value="call_start_mapping_service()&#xa;→ /part3/mapping/start (Trigger)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="326" width="155" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="391" value="call_start_waypoint_service()&#xa;→ /part3/waypoint/start (Trigger)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="368" width="155" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="392" value="publish_cmd_vel(linear_x, angular_z)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="225" y="410" width="155" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LAYER 3: Shared Python Dicts ===== -->
+        <mxCell id="40" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;opacity=20;" vertex="1" parent="1">
+          <mxGeometry x="410" y="20" width="170" height="448" as="geometry" />
+        </mxCell>
+        <mxCell id="41" value="Shared Python Dicts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d79b00;strokeColor=#d79b00;fontColor=#ffffff;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="28" width="150" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="411" value="Python GIL — no explicit lock needed" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=8;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="420" y="62" width="150" height="16" as="geometry" />
+        </mxCell>
+
+        <mxCell id="42" value="robot_data { }&#xa;  x, y, yaw (TF)&#xa;  system_state&#xa;  map_status, waypoint_plan&#xa;  scan { ranges[ ], angle_min, … }&#xa;  markers, greek_markers&#xa;  path [ ]&#xa;  waypoint_progress { }&#xa;  last_estop_event" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;align=left;" vertex="1" parent="1">
+          <mxGeometry x="420" y="82" width="150" height="148" as="geometry" />
+        </mxCell>
+        <mxCell id="43" value="map_data { }&#xa;  width, height&#xa;  resolution&#xa;  origin_x, origin_y&#xa;  data[ ] (cell array)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;align=left;" vertex="1" parent="1">
+          <mxGeometry x="420" y="238" width="150" height="88" as="geometry" />
+        </mxCell>
+        <mxCell id="44" value="camera_data { }&#xa;  available: bool&#xa;  encoding, width, height&#xa;  frame: &quot;data:image/jpeg;base64,…&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;align=left;" vertex="1" parent="1">
+          <mxGeometry x="420" y="334" width="150" height="78" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LAYER 4: Flask REST API ===== -->
+        <mxCell id="50" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;opacity=20;" vertex="1" parent="1">
+          <mxGeometry x="600" y="20" width="168" height="448" as="geometry" />
+        </mxCell>
+        <mxCell id="51" value="Flask REST API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#82b366;strokeColor=#82b366;fontColor=#ffffff;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="28" width="148" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="511" value="Flask main thread — 0.0.0.0:5000" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=8;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="610" y="62" width="148" height="16" as="geometry" />
+        </mxCell>
+
+        <mxCell id="52" value="GET  /api/status" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="82" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="53" value="GET  /api/map" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="114" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="54" value="GET  /api/camera_frame" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="146" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="55" value="GET  /api/filtered_markers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="178" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="56" value="POST /api/start_mapping" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="218" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="57" value="POST /api/start_nav2_waypoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="250" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="58" value="POST /api/manual_control" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="282" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="59" value="POST /api/stop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="314" width="148" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="591" value="POST /api/resume" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="346" width="148" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LAYER 5: JS Polling ===== -->
+        <mxCell id="60" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;opacity=20;" vertex="1" parent="1">
+          <mxGeometry x="788" y="20" width="168" height="448" as="geometry" />
+        </mxCell>
+        <mxCell id="61" value="JS fetch( ) Polling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d6b656;strokeColor=#d6b656;fontColor=#ffffff;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="798" y="28" width="148" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="611" value="Browser — single-page HTML/JS" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=8;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="798" y="62" width="148" height="16" as="geometry" />
+        </mxCell>
+
+        <mxCell id="62" value="updateStatus()&#xa;setInterval 1 000 ms&#xa;→ GET /api/status" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="82" width="148" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="63" value="updateMapData()&#xa;setInterval 5 000 ms&#xa;→ GET /api/map" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="142" width="148" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="64" value="updateCameraFrame()&#xa;setInterval 1 000 ms&#xa;→ GET /api/camera_frame" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="202" width="148" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="65" value="startMapping() [button]&#xa;→ POST /api/start_mapping" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="262" width="148" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="66" value="startWaypoints() [button]&#xa;→ POST /api/start_nav2_waypoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="308" width="148" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="67" value="WASD keydown&#xa;setInterval 200 ms&#xa;→ POST /api/manual_control" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="354" width="148" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="671" value="E-Stop [button]&#xa;setInterval 200 ms&#xa;→ POST /api/stop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="798" y="414" width="148" height="38" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LAYER 6: Canvas / DOM ===== -->
+        <mxCell id="70" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=20;" vertex="1" parent="1">
+          <mxGeometry x="976" y="20" width="168" height="448" as="geometry" />
+        </mxCell>
+        <mxCell id="71" value="Canvas / DOM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b85450;strokeColor=#b85450;fontColor=#ffffff;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="986" y="28" width="148" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="711" value="900 × 650 px HTML Canvas" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=8;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="986" y="62" width="148" height="16" as="geometry" />
+        </mxCell>
+
+        <mxCell id="72" value="drawOccupancyGrid()&#xa;-1 = grey #d7dde8 (unknown)&#xa; 0 = white (free)&#xa;&gt;50 = black (occupied)&#xa;Y-flip: row 0 = map bottom" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="986" y="82" width="148" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="73" value="drawRobot()&#xa;green circle + heading arrow&#xa;worldToScreen(x, y, map)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="986" y="170" width="148" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="74" value="drawPath()&#xa;blue polyline (Nav2 /plan)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="986" y="228" width="148" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="75" value="drawMarkers()&#xa;greek = purple ●&#xa;colour = yellow ●" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="986" y="272" width="148" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="76" value="drawLidar()&#xa;cyan scatter (toggle)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="986" y="330" width="148" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="77" value="DOM Updates&#xa;pose (X,Y,Yaw), state pills&#xa;waypoint timeline, marker table&#xa;safety event, mission log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="986" y="374" width="148" height="68" as="geometry" />
+        </mxCell>
+
+        <!-- ===== ARROWS (main forward flow) ===== -->
+        <!-- L1 → L2: subscribe -->
+        <mxCell id="80" value="subscribe" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=9;fontStyle=1;" edge="1" parent="1" source="10" target="30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- L2 → L3: write -->
+        <mxCell id="81" value="write" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#9673a6;fontColor=#9673a6;fontSize=9;fontStyle=1;" edge="1" parent="1" source="30" target="40">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- L3 → L4: jsonify -->
+        <mxCell id="82" value="jsonify()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#d79b00;fontColor=#d79b00;fontSize=9;fontStyle=1;" edge="1" parent="1" source="40" target="50">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- L4 → L5: JSON response -->
+        <mxCell id="83" value="JSON response" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#82b366;fontColor=#82b366;fontSize=9;fontStyle=1;" edge="1" parent="1" source="50" target="60">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- L5 → L6: render / update -->
+        <mxCell id="84" value="render / update" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#d6b656;fontColor=#d6b656;fontSize=9;fontStyle=1;" edge="1" parent="1" source="60" target="70">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- POST commands from L5 back to L4 (below main row) -->
+        <mxCell id="85" value="POST requests (buttons / WASD)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeColor=#d79b00;fontColor=#d79b00;fontSize=9;fontStyle=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="60" target="50">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="872" y="520" />
+              <mxPoint x="684" y="520" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Service call from L4 back to L2 (below all) -->
+        <mxCell id="86" value="ROS 2 service call (Trigger)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeColor=#82b366;fontColor=#82b366;fontSize=9;fontStyle=1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="50" target="30">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="684" y="550" />
+              <mxPoint x="302" y="550" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

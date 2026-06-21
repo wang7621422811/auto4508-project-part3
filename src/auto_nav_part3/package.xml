@@ -15,6 +15,20 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>joint_state_publisher</exec_depend>
+  <!-- M1.C1.1：EKF 融合定位（odom + IMU → /odometry/filtered + odom→base_link TF） -->
+  <exec_depend>robot_localization</exec_depend>
+  <!-- M2.C2.1：slam_toolbox 在线异步建图（/scan + TF → /map + map→odom TF） -->
+  <exec_depend>slam_toolbox</exec_depend>
+  <!-- M3.C3.1：Nav2 导航栈（全局/局部规划、避障、恢复行为） -->
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <!-- M4.C4.2：map_manager 直接订阅 /map（OccupancyGrid）写 pgm/yaml/png，无子进程 -->
+  <exec_depend>nav_msgs</exec_depend>
+  <!-- M4.C4.1：TF 查询（map→base_link）供探索节点获取机器人位置 -->
+  <exec_depend>tf2_ros</exec_depend>
+  <!-- M4.C4.1：numpy 用于 frontier 检测的向量化运算 -->
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -1,0 +1,97 @@
+# =============================================================================
+# slam_toolbox_localization.yaml — slam_toolbox 定位模式配置 (Phase 2)
+# =============================================================================
+#
+# 用途：
+#   Phase 1（建图）结束后，map_manager 自动序列化位姿图到：
+#       artifacts/maps/discovery_map.posegraph
+#       artifacts/maps/discovery_map.data
+#
+#   Phase 2（重复导航）启动时，用 use_localization:=true 加载此文件：
+#       slam_toolbox 切换为 localization 模式，读取位姿图并用激光雷达实时定位，
+#       发布 /map（已建地图，静止）和 map→odom TF，Nav2 正常工作。
+#
+# 与建图模式（slam_toolbox.yaml）的区别：
+#   mode: localization  — 不更新地图，只做位姿估计
+#   map_file_name       — 由 sim_bringup.launch.py 注入绝对路径（不含扩展名）
+#   do_loop_closing: false — 定位模式无需闭环检测
+#
+# 启动命令：
+#   ros2 launch auto_nav_part3 sim_bringup.launch.py \
+#       use_localization:=true use_nav2:=true
+#
+# =============================================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ── 坐标系（必须与建图模式完全一致）──────────────────────────────────────
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+
+    # ── 运行模式 ─────────────────────────────────────────────────────────────
+    # localization：加载已有位姿图，仅定位不更新地图
+    mode: localization
+
+    # map_file_name：位姿图文件路径，不含扩展名（slam_toolbox 自动加 .posegraph / .data）
+    # 由 sim_bringup.launch.py 注入绝对路径（_WS_ROOT/artifacts/maps/discovery_map）
+    map_file_name: ""
+
+    # ── 分辨率（与建图模式保持一致，否则加载失败）────────────────────────────
+    resolution: 0.05
+    max_laser_range: 15.0
+
+    # ── 频率控制 ─────────────────────────────────────────────────────────────
+    throttle_scans: 1
+    minimum_travel_distance: 0.2
+    minimum_travel_heading: 0.5
+    minimum_time_interval: 0.05
+
+    # ── TF 发布 ──────────────────────────────────────────────────────────────
+    transform_publish_period: 0.1
+    transform_timeout: 0.3
+    tf_buffer_duration: 30.0
+
+    # ── 地图更新 ─────────────────────────────────────────────────────────────
+    # localization 模式仍会发布 /map，但地图内容来自加载的位姿图，不会被扫描更新
+    map_update_interval: 1.0
+
+    # ── 扫描匹配 ─────────────────────────────────────────────────────────────
+    use_scan_matching: true
+    use_scan_barycenter: true
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+
+    # ── 闭环检测（定位模式关闭，不需要）─────────────────────────────────────
+    do_loop_closing: false
+
+    # ── 扫描匹配质量参数 ─────────────────────────────────────────────────────
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+
+    # ── 相关性搜索 ───────────────────────────────────────────────────────────
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # ── Ceres 求解器 ─────────────────────────────────────────────────────────
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ── 内存 ─────────────────────────────────────────────────────────────────
+    stack_size_to_use: 40000000
+
+    debug_logging: false
+    enable_interactive_mode: true

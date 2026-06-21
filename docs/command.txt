@@ -1,0 +1,30 @@
+ros2 service call /part3/mapping/start std_srvs/srv/Trigger {} ：Mapping
+ros2 service call /part3/mapping/save_map std_srvs/srv/Trigger {} Save map
+
+ros2 service call /part3/waypoint/start std_srvs/srv/Trigger {}:  Start waypoint navigation
+
+# checking status
+source install/setup.bash
+
+ros2 topic echo /part3/system/state &
+ros2 topic echo /part3/mapping/map_status &
+ros2 topic echo /part3/waypoint/plan &
+ros2 topic echo /part3/perception/marker_event &
+wait
+
+# bag review
+
+cd /home/parallels/workspace/projects/auto4508-project-part3
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+export LIBGL_ALWAYS_SOFTWARE=1
+export QT_OPENGL=software
+rviz2 -d src/auto_nav_part3/rviz/pioneer.rviz --ros-args -p use_sim_time:=true
+
+
+cd /home/parallels/workspace/projects/auto4508-project-part3
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 bag play artifacts/bags/session_1779416560 --clock --loop
+
+(base) parallels@ubuntu-linux-2404:auto4508-project-part3$  source /home/parallels/workspace/projects/auto4508-project-part3/.venv/bin/activate

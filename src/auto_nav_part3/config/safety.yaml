@@ -1,0 +1,36 @@
+# C_S.1 — SafetyMonitor 参数（移动障碍急停）
+# C_S.2 — RollingRecorder 参数追加在 buffer_duration_sec / bag_save_dir 段落
+#
+# 算法说明：
+#   检测"正在靠近且已进入危险距离"的光束：
+#     delta = prev_range - curr_range > moving_delta_m  →  靠近
+#     curr_range < estop_distance_m                     →  已在危险距离内
+#   连续 consecutive_frames 帧满足条件 → 触发急停
+#   急停期间以 publish_rate_hz 持续向 /cmd_vel_safety 发零速
+#   障碍消失（连续 consecutive_frames 帧无靠近光束）→ 解除急停
+#   两次急停之间强制 estop_cooldown_sec 冷却，防止连续触发录包
+
+safety_monitor:
+  ros__parameters:
+    # 触发急停的距离门限（米）
+    estop_distance_m: 1.0
+    # 相邻帧距离变化超过此值视为"正在靠近"（米）
+    moving_delta_m: 0.15
+    # 需连续几帧满足条件才触发（防误报）
+    consecutive_frames: 3
+    # 急停后冷却时间（秒），防止录包被连续触发
+    estop_cooldown_sec: 2.0
+    # 急停期间持续发零速的频率（Hz）
+    publish_rate_hz: 10.0
+    # 角速度阈值（rad/s）：超过此值时跳过帧间比较，防止转弯扫过墙角误报
+    # MPPI wz_max=2.5 rad/s；0.3 rad/s 可过滤绝大多数 Nav2 转弯
+    rotation_skip_wz_rad: 0.3
+
+# --- C_S.2 RollingRecorder 参数 ---
+# 节点名 part3_rolling_recorder 对应下方 rolling_recorder 段落
+rolling_recorder:
+  ros__parameters:
+    # 滚动缓冲窗口大小（秒），急停时保存这段时间内的所有数据
+    buffer_duration_sec: 5.0
+    # rosbag 写盘目录（相对于工作目录，即项目根目录）
+    bag_save_dir: artifacts/bags

@@ -8,8 +8,26 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.idea/
+.claude/
+
 
 # OS / IDE
 .DS_Store
 .vscode/
 .idea/
+.claude/
+.vscode
+.junie
+frames_**
+
+**.log
+
+
+./artifacts/maps/
+artifacts/bags/
+artifacts/photos/
+artifacts/waypoints/
+mainifest.csv
+
+another_project_reference/

@@ -1,0 +1,3 @@
+- Pioneer3at spin is not correct, fix: update the wheel_separation of the pioneer.
+- slam见图总是探索不完全地图
+- twist_mux 接收不到 Nav2 速度指令，机器人不动：twist_mux 4.5.0 (Jazzy) 默认 use_stamped=true（订阅 TwistStamped），但 Nav2 collision_monitor 默认 enable_stamped_cmd_vel=false（发布 Twist），类型不匹配导致消息静默丢失。Fix: 在 twist_mux.yaml 中显式设置 use_stamped: false。

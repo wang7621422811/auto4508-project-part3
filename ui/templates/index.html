@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AUTO4508 Part 3 Mission Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <header class="top-bar">
+        <div>
+            <h1>AUTO4508 Part 3 Mission Dashboard</h1>
+            <p>Mapping, Discovery and Rapid Waypoint Driving Interface</p>
+        </div>
+
+        <div class="connection-panel">
+            <span id="connectionDot" class="dot warning"></span>
+            <div class="connection-copy">
+                <span id="connectionText">Waiting</span>
+                <div class="mini-progress">
+                    <span id="connectionProgress"></span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="layout">
+
+        <!-- Left panel -->
+        <section class="left-panel">
+
+            <div class="card">
+                <h2>Mission Status</h2>
+
+                <div class="status-grid">
+                    <div>
+                        <span class="label">System State</span>
+                        <span id="systemState" class="value state-idle">---</span>
+                        <div class="state-switch" aria-label="System state">
+                            <span id="stateIdle" class="state-pill">Idle</span>
+                            <span id="stateMapping" class="state-pill">Mapping</span>
+                            <span id="stateDrive" class="state-pill">Drive</span>
+                            <span id="stateDone" class="state-pill">Done</span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <span class="label">Mapping Progress</span>
+                        <span id="mapStatus" class="value small-text">Waiting</span>
+                        <div class="progress-track">
+                            <span id="mappingProgress" class="progress-fill"></span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <span class="label">Waypoint Plan</span>
+                        <span id="waypointPlan" class="value small-text">No plan received</span>
+                        <div id="waypointTimeline" class="waypoint-timeline"></div>
+                        <div class="progress-track">
+                            <span id="waypointProgress" class="progress-fill purple"></span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <span class="label">Command Status</span>
+                        <span id="commandStatus" class="value small-text">No command sent</span>
+                        <div class="progress-track">
+                            <span id="commandProgress" class="progress-fill teal"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Robot Pose</h2>
+
+                <div class="pose-box">
+                    <div>
+                        <span class="label">X</span>
+                        <span id="robotX" class="big-number">0.00</span>
+                        <div class="progress-track compact">
+                            <span id="robotXProgress" class="progress-fill"></span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <span class="label">Y</span>
+                        <span id="robotY" class="big-number">0.00</span>
+                        <div class="progress-track compact">
+                            <span id="robotYProgress" class="progress-fill"></span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <span class="label">Yaw</span>
+                        <span id="robotYaw" class="big-number">0.0°</span>
+                        <div class="progress-track compact">
+                            <span id="robotYawProgress" class="progress-fill purple"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Mission Control</h2>
+
+                <div class="button-stack">
+                    <button id="startMappingButton" class="green" onclick="startMapping()">
+                        Start Mapping
+                    </button>
+
+                    <button id="startNav2Button" class="blue" onclick="startNav2Waypoints()">
+                        Start Nav2 Waypoints
+                    </button>
+
+                    <button id="estopButton" class="red estop-btn" onclick="toggleEstop()">
+                        E-Stop
+                    </button>
+
+                    <button class="orange hidden-control" onclick="sendStopCommand()">
+                        Stop Robot
+                    </button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Keyboard Control</h2>
+
+                <div class="keyboard-panel">
+                    <label class="switch-row">
+                        <input type="checkbox" id="manualEnable">
+                        <span>Enable Keyboard Control</span>
+                    </label>
+
+                    <div class="slider-group">
+                        <label>Linear Speed: <span id="linearSpeedValue">0.30</span> m/s</label>
+                        <input
+                            type="range"
+                            id="linearSpeed"
+                            min="0.05"
+                            max="0.80"
+                            step="0.05"
+                            value="0.30"
+                            oninput="updateSpeedLabels()"
+                        >
+                    </div>
+
+                    <div class="slider-group">
+                        <label>Angular Speed: <span id="angularSpeedValue">0.60</span> rad/s</label>
+                        <input
+                            type="range"
+                            id="angularSpeed"
+                            min="0.10"
+                            max="1.20"
+                            step="0.10"
+                            value="0.60"
+                            oninput="updateSpeedLabels()"
+                        >
+                    </div>
+
+                    <div class="key-grid">
+                        <div></div>
+                        <div id="keyW" class="key-box">W<br><small>Forward</small></div>
+                        <div></div>
+
+                        <div id="keyA" class="key-box">A<br><small>Left</small></div>
+                        <div id="keyS" class="key-box">S<br><small>Back</small></div>
+                        <div id="keyD" class="key-box">D<br><small>Right</small></div>
+                    </div>
+
+                    <p class="manual-note">
+                        Press W/A/S/D or arrow keys to move. Release key to stop. Space = stop.
+                    </p>
+                </div>
+            </div>
+
+            <div class="card danger-card">
+                <h2>Safety Event</h2>
+                <div id="estopEvent" class="event-box">
+                    No emergency stop event.
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Centre map panel -->
+        <section class="centre-panel">
+
+            <div class="card map-card">
+                <div class="card-header">
+                    <h2>Map View</h2>
+
+                    <div class="map-tools">
+                        <button id="layerPath" class="layer-active" onclick="toggleLayer('path')">Path</button>
+                        <button id="layerMarkers" class="layer-active" onclick="toggleLayer('markers')">Markers</button>
+                        <button id="layerLidar" onclick="toggleLayer('lidar')">Lidar</button>
+                    </div>
+                </div>
+
+                <canvas id="mapCanvas" width="900" height="650"></canvas>
+
+                <div class="legend">
+                    <span><b class="legend-robot"></b> Robot</span>
+                    <span><b class="legend-path"></b> Planned Path</span>
+                    <span><b class="legend-marker"></b> Marker</span>
+                    <span><b class="legend-greek"></b> Greek Marker</span>
+                    <span><b class="legend-lidar"></b> Lidar Point</span>
+                    <span><b class="legend-obstacle"></b> Obstacle</span>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Right panel -->
+        <section class="right-panel">
+
+            <div class="card">
+                <h2>Camera Preview</h2>
+
+                <div class="camera-box">
+                    <img id="cameraImage" class="camera-image" alt="Camera frame">
+
+                    <div id="cameraPlaceholder" class="camera-placeholder">
+                        <span>Camera Feed</span>
+                        <small>Waiting for /camera/image</small>
+                    </div>
+                </div>
+
+                <p class="camera-info">
+                    <b>Status:</b> <span id="cameraStatus">Waiting</span>
+                </p>
+                <div class="progress-track">
+                    <span id="cameraProgress" class="progress-fill"></span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Map Data</h2>
+                <p><b>Width:</b> <span id="mapWidth">0</span></p>
+                <p><b>Height:</b> <span id="mapHeight">0</span></p>
+                <p><b>Resolution:</b> <span id="mapResolution">0</span> m/cell</p>
+                <p><b>Origin:</b> X <span id="originX">0</span>, Y <span id="originY">0</span></p>
+                <div class="progress-track">
+                    <span id="mapDataProgress" class="progress-fill"></span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Greek Marker Waypoints</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>X</th>
+                            <th>Y</th>
+                            <th>Z</th>
+                        </tr>
+                    </thead>
+                    <tbody id="greekTable">
+                        <tr>
+                            <td colspan="4">No Greek markers</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>Lidar Summary</h2>
+                <p><b>Scan Points:</b> <span id="scanCount">0</span></p>
+                <p><b>Minimum Distance:</b> <span id="minScan">---</span> m</p>
+                <p><b>Range Max:</b> <span id="rangeMax">---</span> m</p>
+                <div class="progress-track">
+                    <span id="scanProgress" class="progress-fill teal"></span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Mission Log</h2>
+                <div id="logBox" class="log-box">
+                    [System] Dashboard started.
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <script>
+        let showPath = true;
+        let showMarkers = true;
+        let showLidar = false;
+
+        let latestData = null;
+        let latestMap = null;
+        let filteredMarkers = [];
+
+        let currentKeyCommand = "stop";
+        let mappingRequestActive = false;
+
+        function setProgress(id, value) {
+            const element = document.getElementById(id);
+            if (!element) return;
+
+            const bounded = Math.max(0, Math.min(100, Number(value) || 0));
+            element.style.width = bounded + "%";
+        }
+
+        function setButtonBusy(buttonId, busy, text) {
+            const button = document.getElementById(buttonId);
+            if (!button) return;
+
+            if (busy) {
+                button.dataset.defaultText = button.innerText;
+                button.innerText = text;
+                button.disabled = true;
+                button.classList.add("is-busy");
+            } else {
+                button.innerText = button.dataset.defaultText || button.innerText;
+                button.disabled = false;
+                button.classList.remove("is-busy");
+            }
+        }
+
+        function updateStartMappingAvailability(state) {
+            const button = document.getElementById("startMappingButton");
+            if (!button) return;
+
+            const mappingActive = state === "MAPPING";
+            button.disabled = mappingRequestActive || mappingActive;
+            button.classList.toggle("is-busy", mappingRequestActive || mappingActive);
+            button.innerText = mappingActive ? "Mapping..." : "Start Mapping";
+        }
+
+        function progressFromText(text, fallback) {
+            const source = String(text || "").toLowerCase();
+            const percentMatch = source.match(/(\d+(?:\.\d+)?)\s*%/);
+
+            if (percentMatch) {
+                return Number(percentMatch[1]);
+            }
+
+            if (source.includes("complete") || source.includes("success") || source.includes("published")) {
+                return 100;
+            }
+
+            if (source.includes("failed") || source.includes("error") || source.includes("not available")) {
+                return 18;
+            }
+
+            if (source.includes("mapping") || source.includes("start") || source.includes("command sent")) {
+                return 62;
+            }
+
+            if (source.includes("waiting") || source.includes("no ")) {
+                return 8;
+            }
+
+            return fallback;
+        }
+
+        function mappingStatusText(text, state) {
+            const source = String(text || "").toLowerCase();
+            const coverage = source.match(/coverage[^0-9]*(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%/);
+            const coverageText = coverage ? ` coverage ${Number(coverage[1] || coverage[2]).toFixed(1)}%` : "";
+
+            if (source.includes("failed") || source.includes("error")) return "FAILED" + coverageText;
+            if (source.includes("complete") || source.includes("success")) return "FINISH" + coverageText;
+            if (state === "MAPPING" || source.includes("mapping") || source.includes("start")) return "IN PROGRESS" + coverageText;
+            return "NOT START" + coverageText;
+        }
+
+        function mappingProgressValue(text, state) {
+            const source = String(text || "").toLowerCase();
+            const coverage = source.match(/coverage[^0-9]*(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%/);
+            if (coverage) return Number(coverage[1] || coverage[2]);
+            if (source.includes("failed") || source.includes("error")) return 18;
+            if (source.includes("complete") || source.includes("success")) return 100;
+            if (state === "MAPPING" || source.includes("mapping") || source.includes("start")) return 50;
+            return 0;
+        }
+
+        async function updateStatus() {
+            try {
+                const response = await fetch("/api/status");
+                const data = await response.json();
+                latestData = data;
+
+                updateConnection(data);
+                updateMissionStatus(data);
+                updateRobotPose(data);
+                updateSafetyEvent(data);
+                updateGreekTable(data.greek_markers || []);
+                updateScanSummary(data.scan);
+
+                drawMap();
+
+            } catch (error) {
+                setConnection(false, "Backend disconnected");
+                console.log(error);
+            }
+        }
+
+        async function updateMapData() {
+            try {
+                const response = await fetch("/api/map");
+                const map = await response.json();
+                latestMap = map;
+
+                document.getElementById("mapWidth").innerText = map.width ?? 0;
+                document.getElementById("mapHeight").innerText = map.height ?? 0;
+                document.getElementById("mapResolution").innerText = Number(map.resolution ?? 0).toFixed(3);
+                document.getElementById("originX").innerText = Number(map.origin_x ?? 0).toFixed(2);
+                document.getElementById("originY").innerText = Number(map.origin_y ?? 0).toFixed(2);
+                setProgress("mapDataProgress", map.width > 0 && map.height > 0 ? 100 : 8);
+
+                drawMap();
+
+            } catch (error) {
+                setProgress("mapDataProgress", 0);
+                console.log(error);
+            }
+        }
+
+        async function updateCameraFrame() {
+            try {
+                const response = await fetch("/api/camera_frame");
+                const camera = await response.json();
+
+                const img = document.getElementById("cameraImage");
+                const placeholder = document.getElementById("cameraPlaceholder");
+                const status = document.getElementById("cameraStatus");
+
+                if (camera.available && camera.frame) {
+                    img.src = camera.frame;
+                    img.style.display = "block";
+                    placeholder.style.display = "none";
+                    status.innerText = `${camera.width} x ${camera.height}, ${camera.encoding}`;
+                    setProgress("cameraProgress", 100);
+                } else {
+                    img.style.display = "none";
+                    placeholder.style.display = "flex";
+                    status.innerText = "Waiting";
+                    setProgress("cameraProgress", 8);
+                }
+
+            } catch (error) {
+                document.getElementById("cameraStatus").innerText = "Disconnected";
+                setProgress("cameraProgress", 0);
+                console.log(error);
+            }
+        }
+
+        async function loadFilteredMarkers() {
+            setButtonBusy("refreshMarkerButton", true, "Loading...");
+            setProgress("markerLoadProgress", 35);
+
+            try {
+                const response = await fetch("/api/filtered_markers");
+                const data = await response.json();
+
+                filteredMarkers = data.markers || [];
+                renderFilteredMarkers(filteredMarkers);
+
+                const markerSource = document.getElementById("markerSource");
+                if (markerSource) {
+                    markerSource.innerText = data.path || "markers.json";
+                }
+                latestData = latestData || {};
+                latestData.markers = filteredMarkers;
+                latestData.greek_markers = filteredMarkers.filter(marker => marker.type === "greek");
+
+                if (data.success) {
+                    addLog(`Loaded filtered markers: ${filteredMarkers.length}`);
+                    setProgress("markerLoadProgress", 100);
+                } else {
+                    addLog("Failed to load filtered markers: " + data.message);
+                    setProgress("markerLoadProgress", 12);
+                }
+
+                drawMap();
+
+            } catch (error) {
+                addLog("Failed to load marker JSON.");
+                setProgress("markerLoadProgress", 12);
+                console.log(error);
+            } finally {
+                setButtonBusy("refreshMarkerButton", false);
+            }
+        }
+
+        function renderFilteredMarkers(markers) {
+            const table = document.getElementById("filteredMarkerTable");
+            if (!table) return;
+            table.innerHTML = "";
+
+            if (!markers || markers.length === 0) {
+                table.innerHTML = `<tr><td colspan="5">No confirmed markers found</td></tr>`;
+                return;
+            }
+
+            markers.forEach(marker => {
+                table.innerHTML += `
+                    <tr>
+                        <td><span class="marker-chip ${marker.type === "greek" ? "marker-greek" : "marker-colour"}">${marker.type}</span></td>
+                        <td>${marker.label}</td>
+                        <td>${Number(marker.count ?? 0)}</td>
+                        <td>${Number(marker.x ?? 0).toFixed(2)}</td>
+                        <td>${Number(marker.y ?? 0).toFixed(2)}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        async function startNav2Waypoints() {
+            addLog("Start Nav2 Waypoints button pressed.");
+            setButtonBusy("startNav2Button", true, "Sending...");
+            setProgress("waypointProgress", 45);
+            try {
+                const response = await fetch("/api/start_nav2_waypoints", {
+                    method: "POST"
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    filteredMarkers = result.markers || filteredMarkers;
+                    renderFilteredMarkers(filteredMarkers);
+                    addLog(`Nav2 waypoint goal sent: ${result.waypoint_count} point(s).`);
+                    setProgress("waypointProgress", 78);
+                } else {
+                    addLog("Nav2 waypoint goal failed: " + result.message);
+                    setProgress("waypointProgress", 12);
+                }
+
+                await updateStatus();
+
+            } catch (error) {
+                addLog("Failed to send Nav2 waypoint goal.");
+                console.log(error);
+            } finally {
+                setButtonBusy("startNav2Button", false);
+            }
+        }       
+
+        function updateConnection(data) {
+            if (data.connection === "ROS2 connected") {
+                setConnection(true, "ROS2 CONNECTED");
+            } else {
+                setConnection(false, data.connection || "Waiting");
+            }
+        }
+
+        function setConnection(ok, text) {
+            const dot = document.getElementById("connectionDot");
+            const label = document.getElementById("connectionText");
+
+            label.innerText = text;
+
+            if (ok) {
+                dot.className = "dot running";
+                setProgress("connectionProgress", 100);
+            } else {
+                dot.className = "dot warning";
+                setProgress("connectionProgress", 18);
+            }
+        }
+
+        function updateMissionStatus(data) {
+            const state = data.system_state ?? "---";
+
+            // 一旦后端确认 MAPPING 状态，清除等待标志，让 mappingActive 接管按钮
+            if (state === "MAPPING" && mappingRequestActive) {
+                mappingRequestActive = false;
+            }
+
+            document.getElementById("systemState").innerText = state;
+            document.getElementById("mapStatus").innerText = mappingStatusText(data.map_status, state);
+            const waypointPercent = renderWaypointProgress(data.waypoint_progress, data.waypoint_plan, state);
+            document.getElementById("commandStatus").innerText = shortCommandStatus(data.command_status, state);
+
+            updateStateColour(state);
+            updateStartMappingAvailability(state);
+            setProgress("mappingProgress", mappingProgressValue(data.map_status, state));
+            setProgress("waypointProgress", waypointPercent);
+            setProgress("commandProgress", progressFromText(data.command_status, 12));
+        }
+
+        function shortCommandStatus(text, state) {
+            const value = String(text || "").toLowerCase();
+            if (state === "WAYPOINT_DRIVE") return "Running";
+            if (state === "COMPLETE" || state === "WAYPOINT_COMPLETE") return "Complete";
+            if (state === "WAYPOINT_FAILED" || value.includes("fail")) return "Failed";
+            if (value.includes("started")) return "Started";
+            if (value.includes("loaded")) return "Loaded";
+            if (value.includes("missing")) return "Missing";
+            if (value.includes("no greek")) return "No Greek waypoints";
+            return text || "Ready";
+        }
+
+        function renderWaypointProgress(progress, fallbackText, state) {
+            const label = document.getElementById("waypointPlan");
+            const timeline = document.getElementById("waypointTimeline");
+            const points = progress && Array.isArray(progress.points) ? progress.points : [];
+            const total = Number(progress?.total ?? points.length ?? 0);
+            const reached = Math.max(0, Math.min(total, Number(progress?.reached_count ?? 0)));
+            const active = Number(progress?.active_index ?? 0);
+            const skipped = new Set((progress?.skipped || []).map(Number));
+            const status = String(progress?.status || "").replaceAll("_", " ");
+
+            if (!total || points.length === 0) {
+                label.innerText = fallbackText || "No waypoint plan";
+                timeline.innerHTML = "";
+                return state === "WAYPOINT_DRIVE" ? 12 : 0;
+            }
+
+            const displayStatus = status ? status.charAt(0).toUpperCase() + status.slice(1) : "Ready";
+            label.innerText = `${displayStatus}: ${reached}/${total}`;
+            timeline.innerHTML = "";
+
+            points.forEach((point, index) => {
+                const item = document.createElement("span");
+                item.className = "waypoint-step";
+                if (index < reached) item.classList.add("waypoint-step-done");
+                if (index === active && index >= reached && state === "WAYPOINT_DRIVE") {
+                    item.classList.add("waypoint-step-active");
+                }
+                if (skipped.has(index)) item.classList.add("waypoint-step-skipped");
+                item.title = `Waypoint ${point.label || index + 1}: (${Number(point.x).toFixed(2)}, ${Number(point.y).toFixed(2)})`;
+                item.innerText = point.label || String(index + 1);
+                timeline.appendChild(item);
+            });
+
+            if (state === "COMPLETE" || state === "WAYPOINT_COMPLETE") return 100;
+            return Math.round((reached / Math.max(total, 1)) * 100);
+        }
+
+        function updateStateColour(state) {
+            const element = document.getElementById("systemState");
+            element.className = "value";
+            const stateMap = {
+                "stateIdle": state === "IDLE",
+                "stateMapping": state === "MAPPING",
+                "stateDrive": state === "WAYPOINT_DRIVE",
+                "stateDone": state === "COMPLETE" || state === "WAYPOINT_COMPLETE"
+            };
+
+            if (state === "IDLE") {
+                element.classList.add("state-idle");
+            } else if (state === "MAPPING") {
+                element.classList.add("state-running");
+            } else if (state === "COMPLETE" || state === "WAYPOINT_COMPLETE") {
+                element.classList.add("state-complete");
+            } else if (state === "WAYPOINT_DRIVE") {
+                element.classList.add("state-driving");
+            } else if (state === "WAYPOINT_FAILED") {
+                element.classList.add("state-failed");
+            } else {
+                element.classList.add("state-idle");
+            }
+
+            Object.keys(stateMap).forEach(id => {
+                const pill = document.getElementById(id);
+                if (pill) {
+                    pill.classList.toggle("state-pill-active", stateMap[id]);
+                }
+            });
+        }
+
+        function updateRobotPose(data) {
+            document.getElementById("robotX").innerText = Number(data.x ?? 0).toFixed(2);
+            document.getElementById("robotY").innerText = Number(data.y ?? 0).toFixed(2);
+            document.getElementById("robotYaw").innerText = Number(data.yaw ?? 0).toFixed(1) + "°";
+            setProgress("robotXProgress", Math.min(100, Math.abs(Number(data.x ?? 0)) * 10));
+            setProgress("robotYProgress", Math.min(100, Math.abs(Number(data.y ?? 0)) * 10));
+            setProgress("robotYawProgress", ((Number(data.yaw ?? 0) + 180) / 360) * 100);
+        }
+
+        function updateSafetyEvent(data) {
+            document.getElementById("estopEvent").innerText =
+                data.last_estop_event ?? "No emergency stop event";
+        }
+
+        function updateGreekTable(markers) {
+            const table = document.getElementById("greekTable");
+            table.innerHTML = "";
+
+            if (!markers || markers.length === 0) {
+                table.innerHTML = `<tr><td colspan="4">No Greek markers</td></tr>`;
+                return;
+            }
+
+            markers.forEach((marker, index) => {
+                table.innerHTML += `
+                    <tr>
+                        <td>G${index}</td>
+                        <td>${Number(marker.x).toFixed(2)}</td>
+                        <td>${Number(marker.y).toFixed(2)}</td>
+                        <td>${Number(marker.z ?? 0).toFixed(2)}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        function updateScanSummary(scan) {
+            if (!scan || !scan.ranges || scan.ranges.length === 0) {
+                return;
+            }
+
+            const validRanges = scan.ranges.filter(r => r !== null && r > 0);
+
+            document.getElementById("scanCount").innerText = validRanges.length;
+            document.getElementById("rangeMax").innerText = Number(scan.range_max ?? 0).toFixed(2);
+
+            if (validRanges.length > 0) {
+                const minRange = Math.min(...validRanges);
+                document.getElementById("minScan").innerText = minRange.toFixed(2);
+                setProgress("scanProgress", Math.min(100, (minRange / Number(scan.range_max || 1)) * 100));
+            } else {
+                document.getElementById("minScan").innerText = "---";
+                setProgress("scanProgress", 8);
+            }
+        }
+
+        function drawMap() {
+            const canvas = document.getElementById("mapCanvas");
+            const ctx = canvas.getContext("2d");
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const map = latestMap;
+            const data = latestData;
+
+            if (!map || !map.data || map.width === 0 || map.height === 0) {
+                drawWaitingMap(ctx, canvas);
+                return;
+            }
+
+            const scaleX = canvas.width / map.width;
+            const scaleY = canvas.height / map.height;
+            const scale = Math.min(scaleX, scaleY);
+
+            const offsetX = (canvas.width - map.width * scale) / 2;
+            const offsetY = (canvas.height - map.height * scale) / 2;
+
+            drawOccupancyGrid(ctx, map, scale, offsetX, offsetY);
+
+            if (data) {
+                if (showPath) {
+                    drawPath(ctx, data.path || [], map, scale, offsetX, offsetY);
+                }
+
+                if (showLidar) {
+                    drawLidar(ctx, data, map, scale, offsetX, offsetY);
+                }
+
+                if (showMarkers) {
+                    drawMarkers(ctx, data.markers || [], map, scale, offsetX, offsetY, "marker");
+                    drawMarkers(ctx, data.greek_markers || [], map, scale, offsetX, offsetY, "greek");
+                }
+
+                drawRobot(ctx, data, map, scale, offsetX, offsetY);
+            }
+        }
+
+        function drawWaitingMap(ctx, canvas) {
+            ctx.fillStyle = "#f5f7fb";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#6b7280";
+            ctx.font = "24px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+            ctx.fillText("Waiting for /map data...", 320, 320);
+        }
+
+        function drawOccupancyGrid(ctx, map, scale, offsetX, offsetY) {
+            for (let y = 0; y < map.height; y++) {
+                for (let x = 0; x < map.width; x++) {
+                    const index = x + y * map.width;
+                    const value = map.data[index];
+
+                    if (value === -1) {
+                        ctx.fillStyle = "#d7dde8";
+                    } else if (value === 0) {
+                        ctx.fillStyle = "#ffffff";
+                    } else if (value > 50) {
+                        ctx.fillStyle = "#1d1d1f";
+                    } else {
+                        ctx.fillStyle = "#b8c1d1";
+                    }
+
+                    const screenX = offsetX + x * scale;
+                    const screenY = offsetY + (map.height - y - 1) * scale;
+
+                    ctx.fillRect(screenX, screenY, Math.ceil(scale), Math.ceil(scale));
+                }
+            }
+        }
+
+        function worldToScreen(x, y, map, scale, offsetX, offsetY) {
+            const gridX = (x - map.origin_x) / map.resolution;
+            const gridY = (y - map.origin_y) / map.resolution;
+
+            return {
+                x: offsetX + gridX * scale,
+                y: offsetY + (map.height - gridY) * scale
+            };
+        }
+
+        function drawPath(ctx, path, map, scale, offsetX, offsetY) {
+            if (!path || path.length === 0) {
+                return;
+            }
+
+            ctx.strokeStyle = "#3b82f6";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+
+            path.forEach((point, index) => {
+                const p = worldToScreen(Number(point.x), Number(point.y), map, scale, offsetX, offsetY);
+
+                if (index === 0) {
+                    ctx.moveTo(p.x, p.y);
+                } else {
+                    ctx.lineTo(p.x, p.y);
+                }
+            });
+
+            ctx.stroke();
+        }
+
+        function drawRobot(ctx, data, map, scale, offsetX, offsetY) {
+            const p = worldToScreen(Number(data.x ?? 0), Number(data.y ?? 0), map, scale, offsetX, offsetY);
+
+            ctx.fillStyle = "#22c55e";
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 11, 0, 2 * Math.PI);
+            ctx.fill();
+
+            const yawRad = Number(data.yaw ?? 0) * Math.PI / 180.0;
+            const arrowLength = 28;
+
+            ctx.strokeStyle = "#22c55e";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(
+                p.x + Math.cos(yawRad) * arrowLength,
+                p.y - Math.sin(yawRad) * arrowLength
+            );
+            ctx.stroke();
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "13px Arial";
+            ctx.fillText("Robot", p.x + 14, p.y - 14);
+        }
+
+        function drawMarkers(ctx, markerList, map, scale, offsetX, offsetY, type) {
+            markerList.forEach((marker, index) => {
+                const p = worldToScreen(Number(marker.x), Number(marker.y), map, scale, offsetX, offsetY);
+
+                if (type === "greek") {
+                    ctx.fillStyle = "#a855f7";
+                } else {
+                    ctx.fillStyle = "#facc15";
+                }
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
+                ctx.fill();
+
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "12px Arial";
+                ctx.fillText(marker.label || (type === "greek" ? "G" + index : "M" + index), p.x + 10, p.y - 8);
+            });
+        }
+
+        function drawLidar(ctx, data, map, scale, offsetX, offsetY) {
+            if (!data.scan || !data.scan.ranges || data.scan.ranges.length === 0) {
+                return;
+            }
+
+            const robotX = Number(data.x ?? 0);
+            const robotY = Number(data.y ?? 0);
+            const robotYaw = Number(data.yaw ?? 0) * Math.PI / 180.0;
+
+            ctx.fillStyle = "#38bdf8";
+
+            data.scan.ranges.forEach((range, index) => {
+                if (range === null || range <= 0) {
+                    return;
+                }
+
+                const angle = robotYaw + Number(data.scan.angle_min ?? 0) + index * Number(data.scan.angle_increment ?? 0);
+
+                const pointX = robotX + range * Math.cos(angle);
+                const pointY = robotY + range * Math.sin(angle);
+
+                const p = worldToScreen(pointX, pointY, map, scale, offsetX, offsetY);
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 2, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+
+        function toggleLayer(layer) {
+            if (layer === "path") {
+                showPath = !showPath;
+                addLog("Path layer: " + (showPath ? "ON" : "OFF"));
+            }
+
+            if (layer === "markers") {
+                showMarkers = !showMarkers;
+                addLog("Marker layer: " + (showMarkers ? "ON" : "OFF"));
+            }
+
+            if (layer === "lidar") {
+                showLidar = !showLidar;
+                addLog("Lidar layer: " + (showLidar ? "ON" : "OFF"));
+            }
+
+            drawMap();
+            updateLayerButtons();
+        }
+
+        function updateLayerButtons() {
+            document.getElementById("layerPath").classList.toggle("layer-active", showPath);
+            document.getElementById("layerMarkers").classList.toggle("layer-active", showMarkers);
+            document.getElementById("layerLidar").classList.toggle("layer-active", showLidar);
+        }
+
+        function updateSpeedLabels() {
+            const linear = document.getElementById("linearSpeed").value;
+            const angular = document.getElementById("angularSpeed").value;
+
+            document.getElementById("linearSpeedValue").innerText = Number(linear).toFixed(2);
+            document.getElementById("angularSpeedValue").innerText = Number(angular).toFixed(2);
+        }
+
+        async function startMapping() {
+            if (mappingRequestActive) {
+                return;
+            }
+
+            addLog("Start Mapping button pressed.");
+            mappingRequestActive = true;
+            updateStartMappingAvailability("MAPPING");
+            setProgress("mappingProgress", 45);
+
+            try {
+                const response = await fetch("/api/start_mapping", {
+                    method: "POST"
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    addLog("Mapping started: " + result.message);
+                    // 保持 mappingRequestActive = true，让按钮维持禁用状态
+                    // 等 status 轮询确认 system_state === "MAPPING" 后再由
+                    // updateStartMappingAvailability 接管
+                } else {
+                    addLog("Start mapping failed: " + result.message);
+                    mappingRequestActive = false;
+                    updateStartMappingAvailability(latestData?.system_state);
+                }
+
+                await updateStatus();
+
+            } catch (error) {
+                addLog("Start mapping request error: " + error);
+                setProgress("mappingProgress", 12);
+                console.error(error);
+                mappingRequestActive = false;
+                updateStartMappingAvailability(latestData?.system_state);
+            }
+        }
+
+        async function sendManualCommand(command) {
+            const manualEnabled = document.getElementById("manualEnable").checked;
+
+            if (!manualEnabled && command !== "stop") {
+                addLog("Keyboard control is disabled.");
+                return;
+            }
+
+            const linearSpeed = Number(document.getElementById("linearSpeed").value);
+            const angularSpeed = Number(document.getElementById("angularSpeed").value);
+
+            let linearX = 0.0;
+            let angularZ = 0.0;
+
+            if (command === "forward") {
+                linearX = linearSpeed;
+            } else if (command === "backward") {
+                linearX = -linearSpeed;
+            } else if (command === "left") {
+                angularZ = angularSpeed;
+            } else if (command === "right") {
+                angularZ = -angularSpeed;
+            }
+
+            try {
+                await fetch("/api/manual_control", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        command: command,
+                        linear_x: linearX,
+                        angular_z: angularZ
+                    })
+                });
+            } catch (error) {
+                addLog("Keyboard command failed.");
+                console.log(error);
+            }
+        }
+
+        async function sendStopCommand() {
+            try {
+                await fetch("/api/stop", {method: "POST"});
+                currentKeyCommand = "stop";
+                clearKeyHighlight();
+                addLog("Stop command sent.");
+            } catch (error) {
+                addLog("Stop command failed.");
+                console.log(error);
+            }
+        }
+
+        // ── E-Stop toggle ────────────────────────────────────────────────────
+        let estopActive = false;
+        let estopInterval = null;
+
+        async function toggleEstop() {
+            const btn = document.getElementById("estopButton");
+            if (!estopActive) {
+                // Activate E-Stop: keep sending zero velocity every 200 ms
+                estopActive = true;
+                btn.textContent = "Stopped";
+                btn.classList.add("estop-active");
+                addLog("E-Stop activated — robot halted.");
+                await fetch("/api/stop", {method: "POST"});
+                estopInterval = setInterval(async () => {
+                    try { await fetch("/api/stop", {method: "POST"}); } catch (_) {}
+                }, 200);
+            } else {
+                // Deactivate E-Stop: stop the repeated stop commands
+                estopActive = false;
+                clearInterval(estopInterval);
+                estopInterval = null;
+                btn.textContent = "E-Stop";
+                btn.classList.remove("estop-active");
+                await fetch("/api/resume", {method: "POST"});
+                addLog("E-Stop released — robot can resume.");
+            }
+        }
+
+        function setKeyHighlight(key, active) {
+            const idMap = {
+                "forward": "keyW",
+                "backward": "keyS",
+                "left": "keyA",
+                "right": "keyD"
+            };
+
+            const elementId = idMap[key];
+            if (!elementId) return;
+
+            const element = document.getElementById(elementId);
+            if (!element) return;
+
+            if (active) {
+                element.classList.add("key-active");
+            } else {
+                element.classList.remove("key-active");
+            }
+        }
+
+        function clearKeyHighlight() {
+            ["keyW", "keyA", "keyS", "keyD"].forEach(id => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.classList.remove("key-active");
+                }
+            });
+        }
+
+        let activeCommand = "stop";
+        let keyboardTimer = null;
+
+        function keyToCommand(event) {
+            if (event.key === "w" || event.key === "W" || event.key === "ArrowUp") {
+                return "forward";
+            }
+
+            if (event.key === "s" || event.key === "S" || event.key === "ArrowDown") {
+                return "backward";
+            }
+
+            if (event.key === "a" || event.key === "A" || event.key === "ArrowLeft") {
+                return "left";
+            }
+
+            if (event.key === "d" || event.key === "D" || event.key === "ArrowRight") {
+                return "right";
+            }
+
+            if (event.key === " ") {
+                return "stop";
+            }
+
+            return null;
+        }
+
+
+        function startKeyboardCommand(command) {
+            if (command === activeCommand && keyboardTimer !== null) {
+                return;
+            }
+
+            activeCommand = command;
+            clearKeyHighlight();
+
+            if (command !== "stop") {
+                setKeyHighlight(command, true);
+            }
+
+            sendManualCommand(command);
+
+            if (keyboardTimer !== null) {
+                clearInterval(keyboardTimer);
+            }
+
+            keyboardTimer = setInterval(function() {
+                sendManualCommand(activeCommand);
+            }, 200);
+        }
+
+
+        function stopKeyboardCommand() {
+            activeCommand = "stop";
+
+            if (keyboardTimer !== null) {
+                clearInterval(keyboardTimer);
+                keyboardTimer = null;
+            }
+
+            clearKeyHighlight();
+            sendManualCommand("stop");
+        }
+
+
+        document.addEventListener("keydown", function(event) {
+            const command = keyToCommand(event);
+
+            if (!command) {
+                return;
+            }
+
+            event.preventDefault();
+
+            if (command === "stop") {
+                stopKeyboardCommand();
+                return;
+            }
+
+            startKeyboardCommand(command);
+        });
+
+
+        document.addEventListener("keyup", function(event) {
+            const command = keyToCommand(event);
+
+            if (!command) {
+                return;
+            }
+
+            event.preventDefault();
+
+            stopKeyboardCommand();
+        });
+
+        function addLog(message) {
+            const logBox = document.getElementById("logBox");
+            const time = new Date().toLocaleTimeString();
+
+            logBox.innerHTML += `<br>[${time}] ${message}`;
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        setInterval(updateStatus, 1000);
+        setInterval(updateMapData, 5000);
+        setInterval(updateCameraFrame, 1000);
+
+        updateSpeedLabels();
+        updateStatus();
+        updateMapData();
+        updateCameraFrame();
+        updateLayerButtons();
+        loadFilteredMarkers();
+    </script>
+</body>
+</html>

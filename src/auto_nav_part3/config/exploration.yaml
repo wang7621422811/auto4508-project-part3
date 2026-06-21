@@ -1,0 +1,104 @@
+# =============================================================================
+# exploration.yaml — Frontier-based 自主探索节点配置 (M4.C4.1)
+# =============================================================================
+#
+# 对应节点：auto_nav_part3/exploration_node.py
+#
+# 激活方式：
+#   方式 A（调试）：auto_start: true → 节点启动后立即开始探索
+#   方式 B（生产）：auto_start: false + 发布 true 到 /part3/exploration/enable
+#                   由 mapping_service (C5.1) 在收到 /part3/mapping/start 时激活
+#
+# 覆盖率说明：
+#   coverage = free_cells / (free_cells + unknown_cells)
+#   仅在 home 周围 coverage_area_size×coverage_area_size 方形区域内统计。
+#   frontier 搜索使用更大的 search_area_size（17m）以保留边界 frontier。
+#   覆盖率 ≥ coverage_done_threshold 时探索自动停止。
+#
+# Frontier 过滤链（依次执行）：
+#   1. 面积 < min_frontier_size cells  → 丢弃（噪声）
+#   2. 质心超出 home±(search_area/2)   → 丢弃（不在任务区域）
+#   3. 与黑名单距离 < blacklist_radius → 丢弃（之前失败过）
+#
+# =============================================================================
+
+exploration_node:
+  ros__parameters:
+
+    # ── 激活 ─────────────────────────────────────────────────────────────────
+    # false：等待外部 /part3/exploration/enable 话题激活（生产模式）
+    # true ：节点启动后立即开始探索（调试/独立测试用）
+    auto_start: false
+
+    # ── Home 坐标 ─────────────────────────────────────────────────────────────
+    # auto_set_home=true：第一次循环时用机器人当前 TF 位置作为 home（推荐）
+    # auto_set_home=false：使用 home_x/home_y 参数（适合从已知出发点启动）
+    # 注意：auto_set_home=true 时 home 为 spawn 位置(-3,0)，导致搜索框偏心，
+    # 东侧 arena 区域(x>4.5)的 frontier 被过滤掉 → 探索提前终止。
+    # 改为 false + home=(0,0)，确保搜索框覆盖整个 arena。
+    auto_set_home: false
+    home_x: 0.0    # map 帧坐标：arena 中心
+    home_y: 0.0
+
+    # ── 探索区域 ─────────────────────────────────────────────────────────────
+    # frontier 搜索边界：以 home 为中心的正方形区域边长（m）。
+    # 17m 给边界 frontier 质心留 1m 余量，避免 arena 边缘 frontier 被过滤。
+    search_area_size: 17.0
+
+    # 覆盖率统计区域边长（m）。必须 ≤ arena 实际边长（15m）。
+    # 不能与 search_area_size 共用：17m box 包含墙外永久 unknown 格子，
+    # 导致分母虚高，coverage 数学上无法达到 90%（实测最高约 75%）。
+    coverage_area_size: 15.0
+
+    # ── Frontier 过滤 ────────────────────────────────────────────────────────────────────
+    # frontier 聚类最小格子数（cell）。
+    # 地图分辨率 0.05m，7 cells ≈ 0.35m 宽的 frontier。
+    # 权衡：3 太小（追噪声 cluster → 机器人快速微移 → SLAM 漂移崩溃）
+    #        10 太大（角落小 cluster 被过滤 → 提前停止在 73%）
+    #        7 过滤单格噪声，保留真实角落 frontier，避免 SLAM 漂移。
+    min_frontier_size: 7
+
+    # ── 覆盖率目标 ────────────────────────────────────────────────────────────
+    # 探索区域内 free/(free+unknown) ≥ 此值时停止。
+    # 0.90 = 90% 格子已变为 free（探索了九成区域）。
+    # 完美覆盖在实践中很难，90% 通常意味着可通行区域全部覆盖。
+    coverage_done_threshold: 0.66
+
+    # ── 导航参数 ─────────────────────────────────────────────────────────────
+    # 单次 Nav2 导航超时（秒）。
+    # 超过此时间仍未到达目标 → 认为卡住，放弃当前目标，换下一个 frontier。
+    # 20s：Pioneer 以 1.5m/s 跑 arena 对角线 21m 仅需 14s，20s 含绕路余量。
+    # 原 45s 使每次真正卡住都浪费约 30s，整体建图时间显著延长。
+    nav_timeout_sec: 20.0
+
+    # 导航失败/超时后，在目标附近此半径内（m）的 frontier 也跳过。
+    # 0.5m：缩小到仅屏蔽真正失败的目标点，允许同一 frontier 集群中
+    # 距离 > 0.5m 的其他点被尝试，解决角落 frontier 因质心在膨胀区
+    # 内不可达后整个角落被封锁的问题。
+    frontier_blacklist_radius: 0.5
+
+    # ── 主循环频率 ────────────────────────────────────────────────────────────
+    loop_rate_hz: 1.0
+
+    # ── 参考代码移植参数 ──────────────────────────────────────────────────────
+    # preprocessMap 迭代次数：参考代码用 5，填充孤立 unknown 小孔。
+    preprocess_iters: 5
+
+    # 可达性检查最多尝试候选数：参考代码尝试 rank 0→3，共 4 个。
+    # 每次检查调一次 ComputePathToPose（约 100ms），3 个候选最多 300ms。
+    top_n_candidates: 3
+
+    # selectFrontier 评分权重：score = alpha*(1/dist) + (1-alpha)*size
+    # 参考代码 alpha=0.99：极度偏近，避免机器人舍近求远追大 frontier。
+    alpha: 0.99
+
+    # ── 探索完成后返回起点 ─────────────────────────────────────────────────
+    # true：节点启动探索时从 TF 记录真实机器人位置，完成后返回该点。
+    # false：完成后返回上面的 home_x/home_y（当前为 arena 中心）。
+    return_to_start_pose: true
+
+    # coverage=done 会同时触发 map_manager 保存地图；延迟几秒再发 Nav2 goal，
+    # 避免 planner/bt_navigator 在保存瞬间负载较高而拒绝或超时。
+    return_home_delay_sec: 3.0
+    return_home_max_retries: 2
+    return_home_retry_delay_sec: 3.0

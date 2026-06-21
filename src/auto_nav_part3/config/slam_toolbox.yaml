@@ -1,0 +1,163 @@
+# =============================================================================
+# slam_toolbox.yaml — slam_toolbox online async mapping configuration (M2.C2.1)
+# =============================================================================
+#
+# How it works:
+#   slam_toolbox subscribes to /scan (laser point cloud) and TF odom→base_link
+#   (provided by EKF), builds an occupancy grid map using scan matching (ICP)
+#   + loop-closure detection, and publishes TF map→odom to complete the full TF chain:
+#       map → odom → base_link → laser_frame / imu_link / ...
+#
+# Data flow:
+#   /scan (LaserScan)  ──┐
+#                        ├─► slam_toolbox ─► /map (OccupancyGrid)
+#   TF: odom→base_link ──┘              └─► TF: map→odom
+#                                        └─► /slam_toolbox/* (services)
+#
+# Mode selection:
+#   mapping     ← this config: online mapping from scratch (M2/M4 exploration)
+#   localization: localise against existing map without updating it (M6 physical robot)
+#   lifelong    : continuously merge and update the map
+#
+# =============================================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ── coordinate frames (must match EKF / URDF exactly) ────────────────────
+    odom_frame: odom          # odometry frame; EKF publishes odom→base_link
+    map_frame: map            # global map frame; SLAM publishes map→odom
+    base_frame: base_link     # robot body frame
+    scan_topic: /scan         # lidar topic (matches ros_gz_bridge bridge)
+
+    # ── operating mode ────────────────────────────────────────────────────────
+    # mapping: tries to improve the map on every scan; supports loop closing and serialisation
+    mode: mapping
+
+    # ── map resolution ────────────────────────────────────────────────────────
+    # 0.05 m per cell (5 cm). A 15×15 m map ≈ 300×300 = 90,000 cells.
+    # Smaller (0.025) gives more detail but is slower; larger (0.1) is faster but less precise.
+    resolution: 0.05
+
+    # ── laser parameters ──────────────────────────────────────────────────────
+    # Scan points beyond this range are ignored. Pioneer SICK lidar effective range ≈ 10-25 m;
+    # 15 m matches the URDF lidar config and avoids noise points polluting the map.
+    max_laser_range: 15.0
+
+    # ── frequency control ─────────────────────────────────────────────────────
+    # throttle_scans=1: process every scan frame (no skipping).
+    # If CPU load is high, set to 2 (process every other frame).
+    throttle_scans: 1
+
+    # Minimum distance the robot must travel between two processed scans (m).
+    # Avoids inserting duplicate scans while stationary, reducing computation and noise.
+    # Note: the first scan is always processed; this parameter controls subsequent frames.
+    # 0.2 m (was 0.5 m): allows map updates after short movements, preventing under-mapping.
+    minimum_travel_distance: 0.2
+
+    # Minimum heading change between two processed scans (rad, ≈ 28°).
+    # At 0.2 rad (11°) the Nav2 Spin recovery (1.5 rad/s) triggered a scan every 0.13 s;
+    # ICP matching failed repeatedly and fell back to odom, creating "ghost walls"
+    # (same wall recorded multiple times).
+    # 0.5 rad (28°): larger inter-frame angle gives ICP enough angular difference to match reliably.
+    minimum_travel_heading: 0.5
+
+    # Minimum time interval between two processed scans (seconds).
+    # At 0.5 s (only 2 Hz), fast robot motion/rotation meant slam_toolbox could not
+    # produce map→odom corrections quickly enough, leaving TF as identity and making
+    # obstacles appear to rotate with the robot in RViz.
+    # 0.05 s (≈ 20 Hz) ensures every scan is processed.
+    minimum_time_interval: 0.05
+
+    # ── TF publishing ─────────────────────────────────────────────────────────
+    # Period at which map→odom TF is published (seconds).
+    # At 0.02 s (≈ 50 Hz) the ARM64 VM could only sustain ≈ 10 Hz in practice,
+    # causing unstable TF timestamps and "obstacles rotating with the robot" in RViz.
+    # 0.1 s (≈ 10 Hz) matches actual system capability and gives stable TF output.
+    transform_publish_period: 0.1
+
+    # Maximum wait time when querying TF (e.g. odom→base_link) in seconds.
+    # EKF publishes at 15 Hz; 0.3 s is enough to receive at least 2 frames.
+    transform_timeout: 0.3
+
+    # TF buffer cache duration (seconds). Larger values allow SLAM to process slightly older scans.
+    tf_buffer_duration: 30.0
+
+    # ── map update ────────────────────────────────────────────────────────────
+    # Period at which the map is re-rasterised and published (seconds).
+    # At 5.0 s updates were too infrequent; 1.0 s lets /map and global_costmap in RViz
+    # reflect the latest scans much sooner.
+    map_update_interval: 1.0
+
+    # ── scan matching (ICP refinement) ────────────────────────────────────────
+    # use_scan_matching=true: use scan matching to correct odometry error, improving map accuracy.
+    # Especially important for Pioneer moving over grass/uneven ground where odom slips.
+    use_scan_matching: true
+    use_scan_barycenter: true
+
+    # ── scan buffer ───────────────────────────────────────────────────────────
+    # Number of recent scans kept internally for scan matching. 10 balances memory and accuracy.
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+
+    # ── loop-closure detection ────────────────────────────────────────────────
+    # When the robot returns to a previously visited area, SLAM recognises the scene
+    # and "stitches" the map, eliminating accumulated drift (the key advantage of SLAM over pure odom).
+    do_loop_closing: true
+
+    # N consecutive scans must be near a loop-closure candidate before it is triggered, preventing false closures.
+    loop_match_minimum_chain_size: 10
+
+    # Loop-closure search radius (m). The robot must be within this distance to attempt a loop match.
+    loop_search_maximum_distance: 3.0
+
+    # Loop-closure match quality thresholds (coarse and fine): 0–1, higher = stricter, fewer false closures.
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # Maximum distance to link the current scan to the previous matched scan (m).
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+
+    # ── correlation search parameters (used in coarse matching) ───────────────
+    # Search for the optimal pose within ±0.5 m × ±0.5 m at 0.01 m resolution.
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # During loop closure, search in a larger ±8 m range.
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ── angular/distance penalty parameters (scan matching quality score) ─────
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349      # ≈ 0.2°
+    coarse_search_angle_offset: 0.349      # ≈ 20°
+    coarse_angle_resolution: 0.0349        # ≈ 2°
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+
+    # ── solver (Ceres pose graph optimisation) ────────────────────────────────
+    # slam_toolbox uses Ceres Solver internally for pose graph optimisation (handles loop-closure constraints).
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ── memory ────────────────────────────────────────────────────────────────
+    # Allocate 40 MB for the SLAM stack. Increase for large maps or long mapping sessions.
+    stack_size_to_use: 40000000
+
+    # ── debugging ─────────────────────────────────────────────────────────────
+    # false: disable verbose logging for production/demo (avoids terminal flood).
+    # true : enable when map drift or misalignment occurs; combine with ros2 topic echo /map.
+    debug_logging: false
+
+    # Allow the RViz slam_toolbox plugin to manually drag map constraints (mapping debug only).
+    enable_interactive_mode: true

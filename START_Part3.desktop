@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=START Part3
+Comment=启动 AUTO4508 Part 3 建图与探索系统
+Exec=gnome-terminal --title="AUTO4508 Part 3" -- bash -c "cd /home/parallels/workspace/projects/auto4508-project-part3 && ./start.sh; echo ''; echo '按 Enter 关闭窗口...'; read"
+Icon=utilities-terminal
+Terminal=false
+Categories=Science;Robotics;
+StartupNotify=true
