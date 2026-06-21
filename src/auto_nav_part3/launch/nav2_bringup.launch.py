@@ -1,33 +1,33 @@
 """
-nav2_bringup.launch.py — Nav2 导航栈启动文件 (M3.C3.1 + C3.2)
+nav2_bringup.launch.py — Nav2 navigation stack launch file (M3.C3.1 + C3.2)
 
-通过 nav2_bringup/navigation_launch.py 启动完整 Nav2 栈，
-传入我们为 Pioneer 3-AT 定制的 nav2_params.yaml。
+Starts the full Nav2 stack via nav2_bringup/navigation_launch.py, passing
+the nav2_params.yaml customised for the Pioneer 3-AT.
 
-节点列表（由 navigation_launch.py 内的 lifecycle_manager 管理）：
-  controller_server   MPPI 控制器，DiffDrive 运动模型
-  smoother_server     路径平滑（SimpleSmoother）
-  planner_server      NavFn A* 全局规划
-  route_server        路由（暂未使用图文件）
-  behavior_server     恢复行为（spin / backup / wait）
-  velocity_smoother   速度平滑
-  collision_monitor   碰撞前停止
-  bt_navigator        行为树导航（响应 /goal_pose 和 /navigate_to_pose action）
-  waypoint_follower   路点序列跟随
-  docking_server      对接（暂未配置对接点）
+Nodes managed by lifecycle_manager inside navigation_launch.py:
+  controller_server   MPPI controller, DiffDrive motion model
+  smoother_server     path smoothing (SimpleSmoother)
+  planner_server      NavFn A* global planner
+  route_server        route server (graph file not used)
+  behavior_server     recovery behaviours (spin / backup / wait)
+  velocity_smoother   velocity smoothing
+  collision_monitor   stop-before-collision
+  bt_navigator        behaviour-tree navigator (handles /goal_pose and /navigate_to_pose action)
+  waypoint_follower   waypoint sequence follower
+  docking_server      docking server (no docking points configured)
 
-cmd_vel 链路：
+cmd_vel pipeline:
   controller_server → cmd_vel_nav
   → velocity_smoother → cmd_vel_smoothed
   → collision_monitor → /cmd_vel → Gazebo / Pioneer
 
 Launch arguments:
-  use_sim_time    true/false  使用仿真时钟（default: true）
+  use_sim_time    true/false  use simulation clock (default: true)
 
-依赖前提（M1 + M2 必须先起）：
-  - EKF 已发布 odom→base_link TF 和 /odometry/filtered
-  - slam_toolbox 已 activate，正在发布 /map 和 map→odom TF
-  - ros_gz_bridge 已桥接 /scan
+Prerequisites (M1 + M2 must be up first):
+  - EKF has published odom→base_link TF and /odometry/filtered
+  - slam_toolbox is activated and publishing /map and map→odom TF
+  - ros_gz_bridge has bridged /scan
 """
 
 import os

@@ -305,6 +305,21 @@ button:hover {
     background: #dc2626;
 }
 
+.estop-btn {
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.estop-active {
+    background: #7f1d1d !important;
+    animation: estop-pulse 1s ease-in-out infinite;
+}
+
+@keyframes estop-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.55; }
+}
+
 /* =========================
    Manual Control
 ========================= */

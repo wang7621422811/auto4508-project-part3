@@ -1288,6 +1288,20 @@ def stop_robot():
     })
 
 
+@app.route("/api/resume", methods=["POST"])
+def resume_robot():
+    global last_manual_command_time
+
+    # Clear the manual command timestamp so the timeout watchdog stops
+    # sending zero-velocity and lets Nav2 / autonomous control resume.
+    last_manual_command_time = 0.0
+
+    return jsonify({
+        "success": True,
+        "message": "Resume: manual stop cleared"
+    })
+
+
 @app.route("/api/debug")
 def debug():
     categorized = list_waypoint_json_files()

@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-mapping_service.py — M5 编排节点 (C5.1)
+mapping_service.py — M5 orchestration node (C5.1)
 
-职责：纯编排，不写任何 SLAM/探索逻辑。
-  1. 收到 /part3/mapping/start → 发布 enable=true 激活 exploration_node
-  2. 监听 /part3/mapping/map_status → 检测 coverage=done → 更新系统状态
-  3. 维护 /part3/system/state（IDLE / MAPPING / COMPLETE）
+Responsibility: pure orchestration — no SLAM or exploration logic.
+  1. Receives /part3/mapping/start → publishes enable=true to activate exploration_node
+  2. Monitors /part3/mapping/map_status → detects coverage=done → updates system state
+  3. Maintains /part3/system/state (IDLE / MAPPING / COMPLETE)
 
-依赖节点（必须已在运行）：
-  - exploration_node  （M4.C4.1）：订阅 /part3/exploration/enable，执行实际探索
-  - map_manager       （M4.C4.2）：自动监听 map_status，探索完成后保存地图
+Required nodes (must already be running):
+  - exploration_node  (M4.C4.1): subscribes to /part3/exploration/enable, runs actual exploration
+  - map_manager       (M4.C4.2): auto-listens to map_status, saves map when exploration finishes
 
-接口：
-  服务  /part3/mapping/start          std_srvs/Trigger  ← UI / 命令行触发
-  发布  /part3/system/state           std_msgs/String   → 系统状态
-  发布  /part3/exploration/enable     std_msgs/Bool     → 激活/停止探索节点
-  订阅  /part3/mapping/map_status     std_msgs/String   ← 探索进度（来自 exploration_node）
+Interface:
+  service  /part3/mapping/start          std_srvs/Trigger  ← UI / command-line trigger
+  publish  /part3/system/state           std_msgs/String   → system state
+  publish  /part3/exploration/enable     std_msgs/Bool     → activate/stop exploration node
+  subscribe /part3/mapping/map_status    std_msgs/String   ← exploration progress (from exploration_node)
 
-response.success 语义：True = "命令已接受"，不代表探索已完成。
+response.success semantics: True = "command accepted", does not mean exploration is complete.
 """
 
 import rclpy
@@ -30,8 +30,8 @@ from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
-# TRANSIENT_LOCAL（相当于 latched topic）：发布者保留最后一条消息，
-# 新加入的订阅者（如延迟 45s 启动的 exploration_node）可立即收到当前状态。
+# TRANSIENT_LOCAL (equivalent to a latched topic): the publisher retains the last message
+# so late-joining subscribers (e.g. exploration_node starting after a 45 s delay) receive the current state immediately.
 _ENABLE_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -40,39 +40,39 @@ _ENABLE_QOS = QoSProfile(
 
 
 class MappingService(Node):
-    """M5 编排：把 /part3/mapping/start 服务调用转发给 exploration_node。"""
+    """M5 orchestration: forwards /part3/mapping/start service calls to exploration_node."""
 
     def __init__(self):
         super().__init__('part3_mapping_service')
 
-        # ── 服务：UI 调用入口 ────────────────────────────────────────────────
+        # ── service: UI entry point ──────────────────────────────────────────
         self.create_service(Trigger, '/part3/mapping/start', self._start_cb)
 
-        # ── 发布者 ───────────────────────────────────────────────────────────
-        # 系统状态：IDLE / MAPPING / COMPLETE
+        # ── publishers ───────────────────────────────────────────────────────
+        # system state: IDLE / MAPPING / COMPLETE
         self._state_pub = self.create_publisher(String, '/part3/system/state', 10)
-        # 探索开关：true = 开始，false = 停止（exploration_node 订阅此话题）
-        # TRANSIENT_LOCAL：exploration_node 延迟 45s 启动，若用默认 VOLATILE，
-        # enable=true 消息会在订阅者加入前丢失，导致探索永远无法启动。
+        # exploration toggle: true = start, false = stop (exploration_node subscribes)
+        # TRANSIENT_LOCAL: exploration_node starts 45 s late; with default VOLATILE
+        # the enable=true message would be lost before the subscriber joins, preventing exploration from ever starting.
         self._enable_pub = self.create_publisher(Bool, '/part3/exploration/enable', _ENABLE_QOS)
         self._home_pub = self.create_publisher(PoseStamped, '/part3/home_pose', _ENABLE_QOS)
         self._tf_buf = Buffer()
         self._tf_listener = TransformListener(self._tf_buf, self)
 
-        # ── 订阅者：监听探索进度 ──────────────────────────────────────────────
-        # exploration_node 周期发布 "coverage=68% frontiers=3 area=15x15"
-        # 探索完成时发布 "coverage=done coverage_pct=XX%"
+        # ── subscriber: monitor exploration progress ──────────────────────────
+        # exploration_node periodically publishes "coverage=68% frontiers=3 area=15x15"
+        # and publishes "coverage=done coverage_pct=XX%" when exploration finishes
         self.create_subscription(
             String, '/part3/mapping/map_status', self._status_cb, 10
         )
 
-        # ── 内部状态 ─────────────────────────────────────────────────────────
-        self._active = False   # 当前是否处于探索中
+        # ── internal state ────────────────────────────────────────────────────
+        self._active = False   # whether exploration is currently active
 
         self._pub_state('IDLE')
         self.get_logger().info('Mapping service ready — call /part3/mapping/start to begin.')
 
-    # ── 服务回调 ─────────────────────────────────────────────────────────────
+    # ── service callback ──────────────────────────────────────────────────────
 
     def _start_cb(self, _request, response):
         if self._active:
@@ -87,30 +87,30 @@ class MappingService(Node):
             name='capture_home_pose',
         ).start()
         self._pub_state('MAPPING')
-        self._pub_enable(True)   # → exploration_node 开始探索
+        self._pub_enable(True)   # → tell exploration_node to start
 
-        self.get_logger().info('[Start] 探索已激活，state → MAPPING')
+        self.get_logger().info('[Start] exploration activated, state → MAPPING')
         response.success = True
         response.message = 'Mapping started. Monitor /part3/mapping/map_status for progress.'
         return response
 
-    # ── 订阅回调 ─────────────────────────────────────────────────────────────
+    # ── subscription callback ─────────────────────────────────────────────────
 
     def _status_cb(self, msg: String):
         """
-        监听探索进度。
-        exploration_node 完成时发布 "coverage=done ..."，此时更新状态。
-        map_manager 自动处理地图保存，本节点无需主动调用。
+        Monitor exploration progress.
+        When exploration_node finishes it publishes "coverage=done ..."; update state accordingly.
+        map_manager handles map saving automatically — this node does not need to trigger it.
         """
         if self._active and 'coverage=done' in msg.data:
             self._active = False
             self._pub_enable(False)
             self._pub_state('COMPLETE')
             self.get_logger().info(
-                f'[Done] 探索完成（{msg.data.strip()}），state → COMPLETE'
+                f'[Done] exploration complete ({msg.data.strip()}), state → COMPLETE'
             )
 
-    # ── 工具方法 ─────────────────────────────────────────────────────────────
+    # ── utility methods ───────────────────────────────────────────────────────
 
     def _pub_state(self, state: str):
         msg = String()

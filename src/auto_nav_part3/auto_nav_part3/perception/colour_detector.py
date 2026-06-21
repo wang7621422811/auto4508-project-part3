@@ -62,12 +62,12 @@ from .perception_utils import lidar_to_odom
 # ---------------------------------------------------------------------------
 _COLOUR_RANGES: dict[str, list[tuple]] = {
     "red": [
-        ((0,   87,  11), (10,  255, 255)),   # 低段红色（H 0-10）
-        ((168, 87,  11), (180, 255, 255)),   # 高段红色（H 168-180）
-        # 原下界 136 把紫色（H≈135-167）也纳入了；调整到 168 排除紫色/品红误检
+        ((0,   87,  11), (10,  255, 255)),   # lower red range (H 0-10)
+        ((168, 87,  11), (180, 255, 255)),   # upper red range (H 168-180)
+        # original lower bound of 136 included purple (H≈135-167); raised to 168 to exclude purple/magenta false positives
     ],
     "yellow": [
-        ((20, 100, 100), (30, 255, 255)),   # 黄色（H 20-30）
+        ((20, 100, 100), (30, 255, 255)),   # yellow (H 20-30)
     ],
 }
 
@@ -108,11 +108,11 @@ class ColourDetectorNode(Node):
         self._robot_x: float      = 0.0
         self._robot_y: float      = 0.0
         self._robot_yaw: float    = 0.0
-        self._latest_scan         = None          # 最新 LaserScan 消息
-        self._scan_stamp: float   = 0.0           # 上次 scan 到达的 monotonic 时间
+        self._latest_scan         = None          # most recent LaserScan message
+        self._scan_stamp: float   = 0.0           # monotonic time of last scan arrival
         self._cam_hfov: float     = 1.089
         self._last_detected: dict[str, float] = {}  # label -> timestamp
-        # label -> [(robot_x, robot_y), ...] 已存图时的机器人位置列表（空间去重）
+        # label -> [(robot_x, robot_y), ...] robot positions where photos were saved (spatial deduplication)
         self._saved_positions: dict[str, list] = {}
 
         # ── subscribers ───────────────────────────────────────────────────
@@ -146,9 +146,9 @@ class ColourDetectorNode(Node):
         self._latest_scan = msg
         self._scan_stamp  = time.monotonic()
         self.get_logger().debug(
-            f"[SCAN] {len(msg.ranges)} 光束  "
-            f"角度 [{math.degrees(msg.angle_min):.0f}°, {math.degrees(msg.angle_max):.0f}°]  "
-            f"测距范围 [{msg.range_min:.2f}, {msg.range_max:.2f}]m",
+            f"[SCAN] {len(msg.ranges)} beams  "
+            f"angle [{math.degrees(msg.angle_min):.0f}°, {math.degrees(msg.angle_max):.0f}°]  "
+            f"range [{msg.range_min:.2f}, {msg.range_max:.2f}]m",
             throttle_duration_sec=10.0,
         )
 
@@ -166,17 +166,17 @@ class ColourDetectorNode(Node):
     # ════════════════════════════════════════════════════════════════════
 
     def _detect(self, bgr: np.ndarray) -> None:
-        # ── 雷达可用性检查（早期退出，避免后续无效计算）────────────────────
+        # ── lidar availability check (early exit to avoid wasted computation) ──
         if self._latest_scan is None:
             self.get_logger().warn(
-                "[COLOUR] /scan 尚未收到，跳过本帧所有颜色检测",
+                "[COLOUR] /scan not yet received, skipping all colour detection this frame",
                 throttle_duration_sec=5.0,
             )
             return
         staleness = time.monotonic() - self._scan_stamp
         if staleness > 1.0:
             self.get_logger().warn(
-                f"[COLOUR] 雷达数据已过期 {staleness:.1f}s（/scan 话题可能已停止），跳过帧",
+                f"[COLOUR] lidar data stale by {staleness:.1f}s (/scan may have stopped), skipping frame",
                 throttle_duration_sec=5.0,
             )
             return
@@ -213,9 +213,9 @@ class ColourDetectorNode(Node):
             if area < _TRUSTED_MIN_AREA_PX or center_offset > _MAX_CENTER_OFFSET_FRAC:
                 continue
 
-            # ── 用雷达测距估算障碍物 odom 坐标 ─────────────────────────────
+            # ── estimate obstacle odom position using lidar range ─────────────
             fx = (bgr.shape[1] / 2.0) / math.tan(self._cam_hfov / 2.0)
-            # bearing: 正值=图像左侧=机器人左侧(+Y), 负值=右侧(-Y)
+            # bearing: positive = left in image = robot left (+Y), negative = right (-Y)
             bearing_rad = math.atan2((bgr.shape[1] / 2.0) - cx_px, fx)
             beam_idx = int(round(
                 (bearing_rad - self._latest_scan.angle_min)
@@ -228,8 +228,8 @@ class ColourDetectorNode(Node):
             )
             if obs is None:
                 self.get_logger().warn(
-                    f"[COLOUR] {colour}: 雷达方位角 {math.degrees(bearing_rad):.1f}° "
-                    f"(beam {beam_idx}/{len(self._latest_scan.ranges)}) 无有效测距，跳过",
+                    f"[COLOUR] {colour}: lidar bearing {math.degrees(bearing_rad):.1f}° "
+                    f"(beam {beam_idx}/{len(self._latest_scan.ranges)}) no valid range, skipping",
                     throttle_duration_sec=5.0,
                 )
                 continue
@@ -256,15 +256,15 @@ class ColourDetectorNode(Node):
         self, bgr: np.ndarray, colour: str, x: int, y: int, w: int, h: int,
         obs_x: float, obs_y: float,
     ) -> str:
-        """只在新位置存图：用观测坐标去重，防止绕同一障碍物转圈时重复写入。"""
+        """Save a photo only at a new location: deduplicates by observation coordinates to avoid re-saving while circling the same obstacle."""
         if not self._is_new_location(colour, obs_x, obs_y):
             return ""
         self._saved_positions.setdefault(colour, []).append((obs_x, obs_y))
         return self._save_photo(bgr, colour, x, y, w, h, obs_x, obs_y)
 
     def _is_new_location(self, label: str, obs_x: float, obs_y: float) -> bool:
-        """估算 marker 坐标与所有已记录位置均超过 new_object_dist_m 时返回 True。
-        用观测坐标而非机器人坐标，避免绕障碍物行走时同一物体被重复上报。"""
+        """Return True if the estimated marker position is more than new_object_dist_m from all previously recorded positions.
+        Uses observation coordinates rather than robot position to avoid re-reporting the same object when orbiting an obstacle."""
         positions = self._saved_positions.get(label, [])
         if not positions:
             return True

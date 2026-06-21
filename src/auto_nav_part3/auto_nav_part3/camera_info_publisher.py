@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""camera_info_publisher.py — 为仿真相机发布 CameraInfo 标定参数。
+"""camera_info_publisher.py — publishes CameraInfo calibration parameters for the simulated camera.
 
-RViz 的 Camera 显示需要 *同时* 订阅 Image 和 CameraInfo 话题。
-Gazebo 桥接只转发图像数据（/camera/image_raw），不生成 CameraInfo，
-导致 RViz 中 Camera 面板显示 "Status: Warn — Expecting Camera Info on..."。
+RViz's Camera display requires *both* an Image and a CameraInfo topic.
+The Gazebo bridge only forwards image data (/camera/image_raw) and does not produce CameraInfo,
+causing RViz's Camera panel to show "Status: Warn — Expecting Camera Info on...".
 
-本节点从 Pioneer URDF 的相机参数（640×480，HFOV=1.089 rad）计算
-内参矩阵 K，以 10 Hz 频率发布 sensor_msgs/CameraInfo，使 RViz 能
-正确渲染相机画面。
+This node computes the intrinsic matrix K from the Pioneer URDF camera parameters
+(640×480, HFOV=1.089 rad) and publishes sensor_msgs/CameraInfo at 10 Hz so RViz
+can render the camera view correctly.
 
-内参计算：
+Intrinsic calculation:
     fx = fy = width / (2 * tan(hfov / 2))
            = 640 / (2 * tan(0.5445)) ≈ 530.0
     cx = width / 2  = 320
@@ -23,12 +23,12 @@ from sensor_msgs.msg import CameraInfo
 
 
 class CameraInfoPublisher(Node):
-    """持续发布 CameraInfo 标定参数的 ROS 2 节点。"""
+    """ROS 2 node that continuously publishes CameraInfo calibration parameters."""
 
     def __init__(self):
         super().__init__('camera_info_publisher')
 
-        # ── 声明参数（可在 launch 文件中覆盖） ──────────────────────
+        # ── parameter declarations (can be overridden in launch file) ──────
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('horizontal_fov', 1.089)
@@ -43,22 +43,22 @@ class CameraInfoPublisher(Node):
         rate = self.get_parameter('publish_rate').value
         topic = self.get_parameter('camera_info_topic').value
 
-        # ── 计算内参矩阵 K ─────────────────────────────────────────
-        # 假设正方形像素 (fx = fy)，无畸变，无歪斜。
+        # ── compute intrinsic matrix K ─────────────────────────────────────
+        # Assumes square pixels (fx = fy), no distortion, no skew.
         fx = width / (2.0 * math.tan(hfov / 2.0))
         fy = fx
         cx = width / 2.0
         cy = height / 2.0
 
-        # ── 构造 CameraInfo 消息 ───────────────────────────────────
+        # ── build CameraInfo message ───────────────────────────────────────
         self.msg = CameraInfo()
         self.msg.header.frame_id = frame_id
         self.msg.width = width
         self.msg.height = height
         self.msg.distortion_model = 'plumb_bob'
-        # 畸变系数全 0（仿真相机无畸变）
+        # all distortion coefficients zero (simulated camera has no distortion)
         self.msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]
-        # 内参矩阵 K (3×3 row-major)
+        # intrinsic matrix K (3×3 row-major)
         # [fx  0 cx]
         # [ 0 fy cy]
         # [ 0  0  1]
@@ -67,20 +67,20 @@ class CameraInfoPublisher(Node):
             0.0, fy, cy,
             0.0, 0.0, 1.0,
         ]
-        # 投影矩阵 P (3×4) — 单目相机，无外参偏移
+        # projection matrix P (3×4) — monocular camera, no extrinsic offset
         self.msg.p = [
             fx, 0.0, cx, 0.0,
             0.0, fy, cy, 0.0,
             0.0, 0.0, 1.0, 0.0,
         ]
-        # 矫正矩阵 R (3×3) — 单位矩阵
+        # rectification matrix R (3×3) — identity
         self.msg.r = [
             1.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
             0.0, 0.0, 1.0,
         ]
 
-        # ── 发布者 + 定时器 ────────────────────────────────────────
+        # ── publisher + timer ──────────────────────────────────────────────
         self.publisher = self.create_publisher(CameraInfo, topic, 10)
         self.timer = self.create_timer(1.0 / rate, self.publish_callback)
 
@@ -90,7 +90,7 @@ class CameraInfoPublisher(Node):
         )
 
     def publish_callback(self):
-        """定时发布 CameraInfo，每次刷新时间戳。"""
+        """Timer callback: publish CameraInfo with a refreshed timestamp."""
         self.msg.header.stamp = self.get_clock().now().to_msg()
         self.publisher.publish(self.msg)
 

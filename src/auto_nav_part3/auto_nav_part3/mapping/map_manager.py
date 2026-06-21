@@ -1,48 +1,49 @@
 #!/usr/bin/env python3
 """
-map_manager.py — 地图保存管理器 (M4.C4.2)
+map_manager.py — map save manager (M4.C4.2)
 
 ================================================================================
-功能概述 (Overview)
+Overview
 ================================================================================
 
-探索完成时把 SLAM 生成的 OccupancyGrid 地图保存成文件，供 UI 展示、
-实验报告截图以及 Task 8（已知地图最短路径规划）复用。
+Saves the SLAM-generated OccupancyGrid map to files on exploration completion,
+for use in the UI, experiment report screenshots, and Task 8 (known-map shortest
+path planning).
 
-触发方式（两种，互不干扰）：
-  1. 自动保存：订阅 /part3/mapping/map_status，检测到 "coverage=done"
-               时自动触发（exploration_node 探索完成后发布此消息）。
-  2. 手动服务：/part3/mapping/save_map (std_srvs/Trigger)。
-               UI 或命令行可随时调用：
-               ros2 service call /part3/mapping/save_map std_srvs/srv/Trigger {}
+Two trigger modes (independent):
+  1. Auto-save: subscribes to /part3/mapping/map_status; fires automatically
+                when "coverage=done" is detected (published by exploration_node).
+  2. Manual service: /part3/mapping/save_map (std_srvs/Trigger).
+                     Callable from UI or command line at any time:
+                     ros2 service call /part3/mapping/save_map std_srvs/srv/Trigger {}
 
-输出文件（均在 save_dir 目录下）：
-  <map_filename>.pgm   — 二进制灰度栅格地图（nav2 map_server 可直接加载）
-  <map_filename>.yaml  — 地图元数据（分辨率 / 原点 / 阈值）
-  <map_filename>.png   — 可视化 PNG（报告截图用）
+Output files (all under save_dir):
+  <map_filename>.pgm   — binary greyscale occupancy grid (directly loadable by nav2 map_server)
+  <map_filename>.yaml  — map metadata (resolution / origin / thresholds)
+  <map_filename>.png   — visual PNG (for report screenshots)
 
-保存流程（直接写文件，无子进程）：
-  ① map_manager 本身订阅 /map（TRANSIENT_LOCAL，与 slam_toolbox QoS 匹配）。
-     收到后缓存最新的 OccupancyGrid 到 _latest_map。
-  ② 触发保存时：从 _latest_map 直接写 .pgm + .yaml（Python stdlib）。
-  ③ 读取 .pgm → 转换成 .png（Pillow 优先；fallback 用 struct + zlib）。
-  ④ 向 /part3/mapping/map_status 发布保存结果。
+Save procedure (direct file write, no subprocess):
+  ① map_manager subscribes to /map (TRANSIENT_LOCAL, matching slam_toolbox QoS).
+     Caches the latest OccupancyGrid in _latest_map on each receipt.
+  ② On save trigger: writes .pgm + .yaml directly from _latest_map (Python stdlib).
+  ③ Converts .pgm → .png (Pillow preferred; stdlib struct+zlib fallback).
+  ④ Publishes save result to /part3/mapping/map_status.
 
-  ★ 不再使用 map_saver_cli 子进程 ★
-    原因：子进程需要重新做 DDS 发现（ARM64/Parallels 需 5-15s），
-    --timeout_ms 10000 不足以完成发现 → returncode=255（内部超时）。
-    直接订阅则复用已有的 ROS2 连接，无发现延迟。
+  ★ map_saver_cli subprocess is NOT used ★
+    Reason: a subprocess must redo DDS discovery (5–15 s on ARM64/Parallels),
+    and --timeout_ms 10000 is insufficient → returncode=255 (internal timeout).
+    Direct subscription reuses the existing ROS2 connection with no discovery delay.
 
-接口 (Interfaces)：
-  订阅  /map                        nav_msgs/OccupancyGrid  SLAM 地图（TRANSIENT_LOCAL）
-  订阅  /part3/mapping/map_status   std_msgs/String         探索进度（来自 exploration_node）
-  服务  /part3/mapping/save_map     std_srvs/Trigger        手动触发保存
-  发布  /part3/mapping/map_status   std_msgs/String         保存结果反馈
+Interfaces:
+  subscribe  /map                        nav_msgs/OccupancyGrid  SLAM map (TRANSIENT_LOCAL)
+  subscribe  /part3/mapping/map_status   std_msgs/String         exploration progress (from exploration_node)
+  service    /part3/mapping/save_map     std_srvs/Trigger        manual save trigger
+  publish    /part3/mapping/map_status   std_msgs/String         save result feedback
 
-参数 (Parameters)：
-  save_dir      str   输出目录（默认 ~/auto4508_artifacts/maps）
-  map_filename  str   文件基名，不含扩展名（默认 discovery_map）
-  auto_save     bool  检测到 coverage=done 时自动保存（默认 true）
+Parameters:
+  save_dir      str   output directory (default ~/auto4508_artifacts/maps)
+  map_filename  str   file basename without extension (default discovery_map)
+  auto_save     bool  automatically save when coverage=done is detected (default true)
 
 ================================================================================
 """
@@ -71,8 +72,8 @@ except ImportError:
     _HAS_SLAM_SERIALIZE = False
 
 
-# /map 话题的 QoS：与 slam_toolbox 发布端保持一致，否则 ROS2 静默不连接。
-# slam_toolbox 用 TRANSIENT_LOCAL（锁存）发布 /map，订阅端必须同样用 TRANSIENT_LOCAL。
+# /map topic QoS: must match the slam_toolbox publisher, otherwise ROS2 silently drops the connection.
+# slam_toolbox publishes /map with TRANSIENT_LOCAL (latching); subscribers must use TRANSIENT_LOCAL too.
 _MAP_QOS = QoSProfile(
     depth=1,
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -82,63 +83,62 @@ _MAP_QOS = QoSProfile(
 
 
 class MapManager(Node):
-    """地图保存管理节点 (M4.C4.2)。
+    """Map save manager node (M4.C4.2).
 
-    设计原则：
-      - 直接订阅 /map，缓存最新 OccupancyGrid，避免子进程 DDS 发现延迟。
-      - 与 exploration_node 松耦合 —— 通过共享 topic /part3/mapping/map_status
-        感知探索进度，而非直接调用或依赖 exploration_node 的内部状态。
-      - 线程安全 —— _save_lock 防止同时触发两次保存（自动 + 手动并发）。
-      - 可重入 —— 同一次运行可多次调用 /part3/mapping/save_map（覆盖旧文件）。
+    Design principles:
+      - Subscribes directly to /map and caches the latest OccupancyGrid, avoiding subprocess DDS discovery delays.
+      - Loosely coupled to exploration_node — tracks exploration progress via the shared /part3/mapping/map_status
+        topic rather than calling or depending on exploration_node's internal state.
+      - Thread-safe — _save_lock prevents concurrent saves (auto-save + manual trigger arriving simultaneously).
+      - Reentrant — /part3/mapping/save_map can be called multiple times in one run (overwrites previous files).
     """
 
     def __init__(self) -> None:
         super().__init__('map_manager')
 
-        # ── 参数声明 ──────────────────────────────────────────────────────────
-        # save_dir：地图文件保存目录。
-        #   默认值 ~/auto4508_artifacts/maps，方便开发时找文件。
-        #   launch 文件可用 parameters=[{'save_dir': '/abs/path/to/artifacts/maps'}]
-        #   覆盖为项目 artifacts/maps/ 的绝对路径。
+        # ── parameter declarations ─────────────────────────────────────────────
+        # save_dir: output directory for map files.
+        #   Default ~/auto4508_artifacts/maps for easy access during development.
+        #   Launch file can override with parameters=[{'save_dir': '/abs/path/to/artifacts/maps'}]
+        #   to use the project artifacts/maps/ absolute path.
         self.declare_parameter('save_dir',
                                os.path.expanduser('~/auto4508_artifacts/maps'))
 
-        # map_filename：输出文件基名（不含扩展名）。
-        #   三种格式（pgm / yaml / png）共用同一基名，与 TOPICS.md 契约一致。
+        # map_filename: output file basename (no extension).
+        #   All three formats (pgm / yaml / png) share the same basename.
         self.declare_parameter('map_filename', 'discovery_map')
 
-        # auto_save：是否在检测到 "coverage=done" 时自动保存。
-        #   true（默认）：无需人工干预，探索完成即存图。
-        #   false：只响应手动服务调用（用于调试 / 分步测试）。
+        # auto_save: whether to save automatically when "coverage=done" is detected.
+        #   true (default): saves without human intervention when exploration finishes.
+        #   false: only responds to manual service calls (useful for debugging / step-by-step testing).
         self.declare_parameter('auto_save', True)
 
-        # 读取参数（显式类型转换避免 Pylance Unknown 警告）
+        # explicit type casts suppress Pylance Unknown warnings
         self._save_dir     = str(self.get_parameter('save_dir').value)
         self._map_filename = str(self.get_parameter('map_filename').value)
         self._auto_save    = bool(self.get_parameter('auto_save').value)
 
-        # ── 确保输出目录存在 ──────────────────────────────────────────────────
-        # exist_ok=True：多次启动不报错，目录已存在时静默跳过。
+        # ensure output directory exists; exist_ok=True silently skips if already present
         os.makedirs(self._save_dir, exist_ok=True)
 
-        # ── 内部状态 ──────────────────────────────────────────────────────────
-        # _latest_map：缓存最新的 OccupancyGrid（来自 /map 订阅）。
-        #   None = 尚未收到任何地图消息（slam_toolbox 还没发布 /map）。
+        # ── internal state ────────────────────────────────────────────────────
+        # _latest_map: cache of the most recent OccupancyGrid from /map.
+        #   None = no map message received yet (slam_toolbox has not published /map).
         self._latest_map: OccupancyGrid | None = None
-        self._map_lock = threading.Lock()  # 保护 _latest_map 的读写
+        self._map_lock = threading.Lock()  # protects _latest_map reads and writes
 
-        # _saving：标记当前是否有保存操作在运行，配合 _save_lock 防止并发。
+        # _saving: flag indicating a save operation is in progress; used with _save_lock to prevent concurrency.
         self._saving = False
         self._save_lock = threading.Lock()
 
-        # _exploration_done：记录是否已为本次探索触发过自动保存。
-        # 防止 exploration_node 多次发布 coverage=done 导致重复写盘。
+        # _exploration_done: records whether auto-save has already been triggered for this exploration run.
+        # Prevents duplicate disk writes when exploration_node publishes coverage=done multiple times.
         self._exploration_done = False
 
-        # ── 订阅者：/map（直接缓存 OccupancyGrid）────────────────────────────
-        # 用 TRANSIENT_LOCAL QoS 与 slam_toolbox 发布端匹配。
-        # TRANSIENT_LOCAL（锁存）：即使本节点晚于 slam_toolbox 启动，
-        # 也能收到 slam_toolbox 之前发布的最新地图（订阅即触发回调）。
+        # ── /map subscriber (caches OccupancyGrid directly) ──────────────────
+        # Uses TRANSIENT_LOCAL QoS to match the slam_toolbox publisher.
+        # TRANSIENT_LOCAL (latching): even if this node starts after slam_toolbox,
+        # it receives the latest map that slam_toolbox already published (callback fires on subscribe).
         self._map_sub = self.create_subscription(
             OccupancyGrid,
             '/map',
@@ -146,41 +146,41 @@ class MapManager(Node):
             _MAP_QOS,
         )
 
-        # ── 发布者：保存结果回写到 map_status ─────────────────────────────────
-        # 与 exploration_node 共享同一 topic（均用 depth=10 默认 QoS）。
-        # map_manager 保存完成后在此 topic 发布 "map_saved: ..." 消息，
-        # UI / state_manager 只需订阅一个 topic 就能获得完整探索 → 存图流程状态。
+        # ── publisher: write save result back to map_status ───────────────────
+        # Shares the same topic with exploration_node (both use the default depth=10 QoS).
+        # map_manager publishes "map_saved: ..." here after saving; UI / state_manager
+        # only needs to subscribe to one topic to get the full explore→save pipeline status.
         self._status_pub = self.create_publisher(
             String, '/part3/mapping/map_status', 10
         )
 
-        # ── 订阅者：监听探索进度 ──────────────────────────────────────────────
-        # 用与 exploration_node._status_pub 完全相同的 QoS（depth=10，RELIABLE，
-        # VOLATILE），避免 QoS 不兼容导致 ROS2 静默断开连接。
-        # VOLATILE（非 TRANSIENT_LOCAL）：如果本节点晚于 exploration_node 启动，
-        # 且探索在本节点启动前就已完成，auto_save 不会被触发。
-        # 解决方案：确保 map_manager 在 exploration_node 之前或同时启动（见 launch）。
+        # ── subscriber: monitor exploration progress ───────────────────────────
+        # Uses exactly the same QoS as exploration_node._status_pub (depth=10, RELIABLE, VOLATILE)
+        # to avoid ROS2 silently dropping the connection due to QoS incompatibility.
+        # VOLATILE (not TRANSIENT_LOCAL): if this node starts after exploration_node and
+        # exploration has already finished before this node launched, auto_save will not trigger.
+        # Solution: ensure map_manager launches before or simultaneously with exploration_node (see launch file).
         self._status_sub = self.create_subscription(
             String,
             '/part3/mapping/map_status',
             self._on_map_status,
-            10,  # depth=10，RELIABLE VOLATILE（默认）
+            10,  # depth=10, RELIABLE VOLATILE (default)
         )
 
-        # ── 服务：手动触发保存 ────────────────────────────────────────────────
+        # ── service: manual save trigger ──────────────────────────────────────
         # /part3/mapping/save_map (std_srvs/Trigger)
-        # 语义：同步执行（服务返回时保存已完成或已失败）。
-        # 与 mapping_service 的 /part3/mapping/start（异步，"已接受"即返回）不同。
+        # Semantics: synchronous execution (save is complete or failed when the service returns).
+        # Different from mapping_service's /part3/mapping/start (async, returns immediately on "accepted").
         self._save_service = self.create_service(
             Trigger,
             '/part3/mapping/save_map',
             self._on_save_map_service,
         )
 
-        # ── slam_toolbox 位姿图序列化客户端（Phase 2 localization 复用）────────
-        # 保存 pgm 后同步序列化位姿图（.posegraph + .data），
-        # 供 use_localization:=true 启动时由 slam_toolbox localization 模式加载。
-        # slam_toolbox 包不可用时静默跳过（不影响正常建图功能）。
+        # ── slam_toolbox pose graph serialisation client (Phase 2 localisation reuse) ──
+        # Serialises the pose graph (.posegraph + .data) after saving the pgm,
+        # for slam_toolbox localisation mode to load when launched with use_localization:=true.
+        # Silently skipped if the slam_toolbox package is unavailable (does not affect normal mapping).
         self._slam_serialize_cli = None
         if _HAS_SLAM_SERIALIZE:
             self._slam_serialize_cli = self.create_client(
@@ -189,69 +189,69 @@ class MapManager(Node):
             )
 
         self.get_logger().info(
-            f'[MapManager] 就绪 | '
+            f'[MapManager] ready | '
             f'save_dir={self._save_dir} | '
             f'map_filename={self._map_filename} | '
             f'auto_save={self._auto_save}'
         )
 
     # =========================================================================
-    # 回调：/map 地图缓存
+    # Callback: /map cache
     # =========================================================================
 
     def _on_map(self, msg: OccupancyGrid) -> None:
-        """缓存最新的 OccupancyGrid 消息。
+        """Cache the latest OccupancyGrid message.
 
-        slam_toolbox 每次更新地图后发布此消息（频率较低，约 1-5 Hz）。
-        用锁保证 _save_impl 读取时不会读到半写状态。
+        slam_toolbox publishes this after each map update (low frequency, ~1–5 Hz).
+        Lock ensures _save_impl never reads a partially written state.
         """
         with self._map_lock:
             self._latest_map = msg
         self.get_logger().debug(
-            f'[MapManager] /map 已更新: '
+            f'[MapManager] /map updated: '
             f'{msg.info.width}x{msg.info.height} '
             f'res={msg.info.resolution:.3f}m/cell'
         )
 
     # =========================================================================
-    # 回调：探索状态监听
+    # Callback: exploration status listener
     # =========================================================================
 
     def _on_map_status(self, msg: String) -> None:
-        """订阅 /part3/mapping/map_status 的回调。
+        """Callback subscribed to /part3/mapping/map_status.
 
-        当 auto_save=true 且消息包含 "coverage=done" 时触发保存。
-        保存在独立守护线程中执行，避免阻塞 ROS2 spin 回调线程。
+        Triggers a save when auto_save=true and the message contains "coverage=done".
+        Save runs in a dedicated daemon thread to avoid blocking the ROS2 spin callback thread.
 
-        "coverage=done" 由 exploration_node 在覆盖率达标或无 frontier 时发布，
-        格式如：
+        "coverage=done" is published by exploration_node when coverage target is reached or
+        no frontiers remain, e.g.:
           "coverage=done coverage_pct=91.3%"
         """
         if not self._auto_save:
-            return  # 手动模式：不响应自动触发
+            return  # manual mode: do not respond to auto-trigger
 
         if 'coverage=done' not in msg.data:
-            return  # 正常进度消息（coverage=68% 等），忽略
+            return  # normal progress message (coverage=68% etc.), ignore
 
         if self._exploration_done:
-            return  # 同一次探索已触发过保存，忽略重复消息
+            return  # auto-save already triggered for this exploration run, ignore duplicates
 
-        # 标记已触发，防止同一次探索的后续重复消息再次启动保存
+        # mark triggered to prevent subsequent duplicate messages from starting another save
         self._exploration_done = True
         self.get_logger().info(
-            f'[MapManager] 检测到探索完成（{msg.data.strip()}），自动触发地图保存...'
+            f'[MapManager] exploration complete detected ({msg.data.strip()}), triggering auto map save...'
         )
 
-        # 在守护线程中执行保存，不阻塞 ROS2 spin
+        # run save in a daemon thread so ROS2 spin is not blocked
         t = threading.Thread(
             target=self._do_save,
             name='map_saver_thread',
-            daemon=True,  # 主进程退出时线程跟着退出，避免孤儿进程
+            daemon=True,  # exits with main process to avoid orphan threads
         )
         t.start()
 
     # =========================================================================
-    # 回调：手动服务
+    # Callback: manual service
     # =========================================================================
 
     def _on_save_map_service(
@@ -259,14 +259,14 @@ class MapManager(Node):
         request: Trigger.Request,
         response: Trigger.Response,
     ) -> Trigger.Response:
-        """处理 /part3/mapping/save_map 服务请求（同步执行）。
+        """Handle /part3/mapping/save_map service request (synchronous).
 
-        参数 request 无字段（std_srvs/Trigger 请求体为空）。
+        request has no fields (std_srvs/Trigger request body is empty).
 
-        返回：
-          response.success = True   保存成功（pgm + yaml 写出，png 尽力而为）
-          response.success = False  保存失败或并发保护拦截
-          response.message          成功时为文件路径描述，失败时为错误描述
+        Returns:
+          response.success = True   save succeeded (pgm + yaml written, png best-effort)
+          response.success = False  save failed or blocked by concurrency guard
+          response.message          file path description on success, error description on failure
         """
         del request  # std_srvs/Trigger 请求无字段，显式删除避免 lint 警告
         success, detail = self._do_save()
@@ -275,81 +275,81 @@ class MapManager(Node):
         return response
 
     # =========================================================================
-    # 核心：保存流程（线程安全入口）
+    # Core: save procedure (thread-safe entry point)
     # =========================================================================
 
     def _do_save(self) -> tuple[bool, str]:
-        """线程安全的保存入口。
+        """Thread-safe save entry point.
 
-        用 _save_lock 确保同一时刻只有一个保存进程在运行：
-          - 自动触发（_on_map_status 线程）和
-          - 手动触发（_on_save_map_service 服务线程）
-          可能同时到达，_saving 标志保证只有第一个执行。
+        Uses _save_lock to ensure only one save runs at a time:
+          - auto-trigger (_on_map_status thread) and
+          - manual trigger (_on_save_map_service service thread)
+          may arrive concurrently; the _saving flag ensures only the first one executes.
 
-        返回 (success, detail_message)。
+        Returns (success, detail_message).
         """
-        # ── 并发保护：尝试获得执行权 ──────────────────────────────────────────
+        # ── concurrency guard: try to acquire execution right ─────────────────
         with self._save_lock:
             if self._saving:
-                # 另一个保存请求正在进行，直接返回（不排队等待）
-                msg = '保存进行中，跳过重复请求'
+                # another save request is in progress; return immediately (do not queue)
+                msg = 'save already in progress, skipping duplicate request'
                 self.get_logger().warn(f'[MapManager] {msg}')
                 return False, msg
-            self._saving = True  # 占用执行权
+            self._saving = True  # claim execution right
 
         try:
             return self._save_impl()
         finally:
-            # 无论成功/失败，释放执行权，允许下次保存
+            # release execution right on success or failure to allow the next save
             with self._save_lock:
                 self._saving = False
 
     def _save_impl(self) -> tuple[bool, str]:
-        """实际执行保存（仅从 _do_save 调用，已持有 _saving 标志）。
+        """Execute the actual save (called only from _do_save, which holds _saving).
 
-        步骤：
-          1. 检查是否已缓存 /map 消息。
-          2. 从缓存的 OccupancyGrid 直接写 pgm + yaml（无子进程，无 DDS 发现延迟）。
-          3. 把 pgm 转换成 png。
-          4. 发布结果到 /part3/mapping/map_status。
+        Steps:
+          1. Check whether a /map message has been cached.
+          2. Write pgm + yaml directly from the cached OccupancyGrid (no subprocess, no DDS discovery delay).
+          3. Convert pgm to png.
+          4. Publish result to /part3/mapping/map_status.
         """
-        # ── 步骤 1：检查缓存的地图 ────────────────────────────────────────────
+        # ── step 1: check cached map ──────────────────────────────────────────
         with self._map_lock:
             grid = self._latest_map
 
         if grid is None:
-            msg = '尚未收到 /map 消息（slam_toolbox 是否已启动并 activate？）'
+            msg = 'no /map message received yet (is slam_toolbox started and activated?)'
             self.get_logger().error(f'[MapManager] {msg}')
             self._publish_status(f'map_save_failed: {msg}')
             return False, msg
 
-        # ── 步骤 2：构建文件路径 ───────────────────────────────────────────────
+        # ── step 2: build file paths ──────────────────────────────────────────
         base_path = os.path.join(self._save_dir, self._map_filename)
         pgm_path  = base_path + '.pgm'
         yaml_path = base_path + '.yaml'
         png_path  = base_path + '.png'
 
         self.get_logger().info(
-            f'[MapManager] 开始保存地图 → {base_path}.* '
+            f'[MapManager] saving map → {base_path}.* '
             f'({grid.info.width}x{grid.info.height} cells, '
             f'res={grid.info.resolution:.3f}m/cell)'
         )
 
-        # ── 步骤 3：写 pgm + yaml ─────────────────────────────────────────────
+        # ── step 3: write pgm + yaml ──────────────────────────────────────────
         try:
             self._write_pgm(grid, pgm_path)
             self._write_yaml(grid, pgm_path, yaml_path)
         except Exception as exc:
-            msg = f'地图文件写入失败: {exc}'
+            msg = f'map file write failed: {exc}'
             self.get_logger().error(f'[MapManager] {msg}')
             self._publish_status(f'map_save_failed: {msg}')
             return False, msg
 
-        self.get_logger().info(f'[MapManager] PGM/YAML 已写出: {pgm_path}')
+        self.get_logger().info(f'[MapManager] PGM/YAML written: {pgm_path}')
 
-        # ── 步骤 3b：序列化 slam_toolbox 位姿图（供 Phase 2 加载）─────────────
-        # 在后台线程调用，不阻塞当前 save 流程或服务回调。
-        # 输出：<base_path>.posegraph + <base_path>.data
+        # ── step 3b: serialise slam_toolbox pose graph (for Phase 2 load) ─────
+        # Called in a background thread so it does not block the current save flow or service callback.
+        # Output: <base_path>.posegraph + <base_path>.data
         threading.Thread(
             target=self._serialize_pose_graph,
             args=(base_path,),
@@ -357,18 +357,18 @@ class MapManager(Node):
             daemon=True,
         ).start()
 
-        # ── 步骤 4：pgm → png ─────────────────────────────────────────────────
-        # PNG 转换失败不影响主要功能（pgm + yaml 已保存），只记录警告
+        # ── step 4: pgm → png ─────────────────────────────────────────────────
+        # PNG conversion failure does not affect core functionality (pgm + yaml already saved); only logs a warning
         png_ok = self._convert_pgm_to_png(pgm_path, png_path)
         if png_ok:
-            self.get_logger().info(f'[MapManager] PNG 已生成: {png_path}')
+            self.get_logger().info(f'[MapManager] PNG generated: {png_path}')
         else:
             self.get_logger().warn(
-                '[MapManager] PNG 生成失败（pgm/yaml 可正常使用，'
-                '安装 python3-pil 可解决 PNG 问题）'
+                '[MapManager] PNG generation failed (pgm/yaml are usable; '
+                'install python3-pil to resolve PNG issues)'
             )
 
-        # ── 步骤 5：发布保存结果 ───────────────────────────────────────────────
+        # ── step 5: publish save result ───────────────────────────────────────
         saved_files = (
             f'{pgm_path}, {yaml_path}'
             + (f', {png_path}' if png_ok else '')
@@ -378,35 +378,35 @@ class MapManager(Node):
         )
 
         result_msg = (
-            f'地图已保存: {base_path}'
+            f'map saved: {base_path}'
             + ('.{pgm,yaml,png}' if png_ok else '.{pgm,yaml}')
         )
         self.get_logger().info(f'[MapManager] {result_msg}')
         return True, result_msg
 
     # =========================================================================
-    # OccupancyGrid → PGM 文件
+    # OccupancyGrid → PGM file
     # =========================================================================
 
     def _write_pgm(self, grid: OccupancyGrid, pgm_path: str) -> None:
-        """从 OccupancyGrid 直接写出 P5 二进制 PGM 文件。
+        """Write a P5 binary PGM file directly from an OccupancyGrid.
 
-        OccupancyGrid 值域与 PGM 灰度值的对应关系（与 map_saver_cli 一致）：
-          grid.data[i] == -1   → 205  (unknown / 灰色)
-          grid.data[i] == 0    → 254  (free / 白色)
-          grid.data[i] > 0     → 0    (occupied / 黑色，100=满占用)
+        OccupancyGrid value to PGM grey-level mapping (matches map_saver_cli):
+          grid.data[i] == -1   → 205  (unknown / grey)
+          grid.data[i] == 0    → 254  (free / white)
+          grid.data[i] > 0     → 0    (occupied / black; 100 = fully occupied)
 
-        PGM 坐标原点在左上角，OccupancyGrid 的行列 (row=0) 对应地图原点（左下）。
-        需要垂直翻转（row 从高到低写入），确保 nav2 map_server 加载后方向正确。
+        PGM origin is top-left; OccupancyGrid row=0 corresponds to the map origin (bottom-left).
+        Vertical flip (rows written high-to-low) ensures correct orientation when nav2 map_server loads the file.
         """
         width  = grid.info.width
         height = grid.info.height
         data   = grid.data  # flat list, row-major, origin at bottom-left
 
-        # 预分配像素数组（height×width 字节）
+        # pre-allocate pixel array (height × width bytes)
         pixels = bytearray(width * height)
         for row in range(height):
-            # PGM 行0 = 图像顶部，OccupancyGrid row0 = 地图底部，需翻转
+            # PGM row 0 = top of image; OccupancyGrid row 0 = map bottom — flip vertically
             pgm_row = height - 1 - row
             for col in range(width):
                 val = data[row * width + col]
@@ -418,7 +418,7 @@ class MapManager(Node):
                     pixels[pgm_row * width + col] = 0    # occupied
 
         with open(pgm_path, 'wb') as fh:
-            # PGM P5 头部
+            # PGM P5 header
             fh.write(f'P5\n{width} {height}\n255\n'.encode('ascii'))
             fh.write(bytes(pixels))
 
@@ -428,22 +428,22 @@ class MapManager(Node):
         pgm_path: str,
         yaml_path: str,
     ) -> None:
-        """写出与 pgm 配套的 nav2 map_server 元数据 YAML 文件。
+        """Write the nav2 map_server metadata YAML file to accompany the pgm.
 
-        格式遵循 nav2 map_server 规范：
-          image       pgm 文件路径（相对路径或绝对路径）
-          mode        trinary（三值：free / occupied / unknown）
-          resolution  米/cell
-          origin      [x, y, yaw]（地图原点在世界坐标系中的位置，yaw=0）
-          negate      0（不反转灰度）
-          occupied_thresh  灰度 < 该值（归一化到 0-1）→ occupied
-          free_thresh      灰度 > 该值（归一化到 0-1）→ free
+        Format follows the nav2 map_server specification:
+          image           pgm file path (relative or absolute)
+          mode            trinary (three values: free / occupied / unknown)
+          resolution      metres/cell
+          origin          [x, y, yaw] (map origin in world frame, yaw=0)
+          negate          0 (do not invert greyscale)
+          occupied_thresh grey value < this (normalised 0–1) → occupied
+          free_thresh     grey value > this (normalised 0–1) → free
         """
         ox = grid.info.origin.position.x
         oy = grid.info.origin.position.y
         res = grid.info.resolution
 
-        # pgm_path 使用绝对路径，map_server 可直接加载，无需相对路径推断
+        # absolute pgm_path so map_server can load it without relative-path inference
         content = (
             f'image: {pgm_path}\n'
             f'mode: trinary\n'
@@ -458,33 +458,33 @@ class MapManager(Node):
             fh.write(content)
 
     # =========================================================================
-    # PGM → PNG 格式转换
+    # PGM → PNG format conversion
     # =========================================================================
 
     def _convert_pgm_to_png(self, pgm_path: str, png_path: str) -> bool:
-        """把 P5 二进制 PGM 文件转换成灰度 PNG。
+        """Convert a P5 binary PGM file to a greyscale PNG.
 
-        转换策略（按优先级）：
-          1. Pillow (PIL)：能处理各种 PGM 变体，推荐安装 `sudo apt install python3-pil`
-          2. stdlib fallback：纯 Python struct + zlib，仅支持标准 P5 8-bit
+        Conversion strategy (in priority order):
+          1. Pillow (PIL): handles all PGM variants; install with `sudo apt install python3-pil`
+          2. stdlib fallback: pure Python struct + zlib; supports standard P5 8-bit only
         """
-        # ── 优先 Pillow ───────────────────────────────────────────────────────
+        # ── prefer Pillow ─────────────────────────────────────────────────────
         try:
             from PIL import Image  # type: ignore[import]
             img = Image.open(pgm_path)
             img.save(png_path)
             return True
         except ImportError:
-            pass  # Pillow 未安装，继续用 stdlib fallback
+            pass  # Pillow not installed, fall through to stdlib fallback
         except Exception as exc:
-            self.get_logger().warn(f'[MapManager] Pillow 转换异常: {exc}')
+            self.get_logger().warn(f'[MapManager] Pillow conversion error: {exc}')
             return False
 
         # ── stdlib fallback ───────────────────────────────────────────────────
         try:
             return self._pgm_to_png_stdlib(pgm_path, png_path)
         except Exception as exc:
-            self.get_logger().warn(f'[MapManager] stdlib PNG 转换失败: {exc}')
+            self.get_logger().warn(f'[MapManager] stdlib PNG conversion failed: {exc}')
             return False
 
     def _pgm_to_png_stdlib(self, pgm_path: str, png_path: str) -> bool:

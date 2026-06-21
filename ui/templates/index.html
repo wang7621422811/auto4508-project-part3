@@ -113,12 +113,12 @@
                         Start Nav2 Waypoints
                     </button>
 
-                    <button class="orange hidden-control" onclick="sendStopCommand()">
-                        Stop Robot
+                    <button id="estopButton" class="red estop-btn" onclick="toggleEstop()">
+                        E-Stop
                     </button>
 
-                    <button class="red hidden-control" onclick="sendStopCommand(); addLog('Software E-Stop button pressed')">
-                        E-Stop
+                    <button class="orange hidden-control" onclick="sendStopCommand()">
+                        Stop Robot
                     </button>
                 </div>
             </div>
@@ -568,6 +568,11 @@
         function updateMissionStatus(data) {
             const state = data.system_state ?? "---";
 
+            // 一旦后端确认 MAPPING 状态，清除等待标志，让 mappingActive 接管按钮
+            if (state === "MAPPING" && mappingRequestActive) {
+                mappingRequestActive = false;
+            }
+
             document.getElementById("systemState").innerText = state;
             document.getElementById("mapStatus").innerText = mappingStatusText(data.map_status, state);
             const waypointPercent = renderWaypointProgress(data.waypoint_progress, data.waypoint_plan, state);
@@ -949,21 +954,22 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    addLog("Start mapping service success: " + result.message);
-                    document.getElementById("startMappingButton").innerText = "Mapping...";
+                    addLog("Mapping started: " + result.message);
+                    // 保持 mappingRequestActive = true，让按钮维持禁用状态
+                    // 等 status 轮询确认 system_state === "MAPPING" 后再由
+                    // updateStartMappingAvailability 接管
                 } else {
-                    addLog("Start mapping service failed: " + result.message);
+                    addLog("Start mapping failed: " + result.message);
                     mappingRequestActive = false;
+                    updateStartMappingAvailability(latestData?.system_state);
                 }
 
                 await updateStatus();
 
             } catch (error) {
-                addLog("Start mapping request failed.");
+                addLog("Start mapping request error: " + error);
                 setProgress("mappingProgress", 12);
-                console.log(error);
-                mappingRequestActive = false;
-            } finally {
+                console.error(error);
                 mappingRequestActive = false;
                 updateStartMappingAvailability(latestData?.system_state);
             }
@@ -1020,6 +1026,34 @@
             } catch (error) {
                 addLog("Stop command failed.");
                 console.log(error);
+            }
+        }
+
+        // ── E-Stop toggle ────────────────────────────────────────────────────
+        let estopActive = false;
+        let estopInterval = null;
+
+        async function toggleEstop() {
+            const btn = document.getElementById("estopButton");
+            if (!estopActive) {
+                // Activate E-Stop: keep sending zero velocity every 200 ms
+                estopActive = true;
+                btn.textContent = "Stopped";
+                btn.classList.add("estop-active");
+                addLog("E-Stop activated — robot halted.");
+                await fetch("/api/stop", {method: "POST"});
+                estopInterval = setInterval(async () => {
+                    try { await fetch("/api/stop", {method: "POST"}); } catch (_) {}
+                }, 200);
+            } else {
+                // Deactivate E-Stop: stop the repeated stop commands
+                estopActive = false;
+                clearInterval(estopInterval);
+                estopInterval = null;
+                btn.textContent = "E-Stop";
+                btn.classList.remove("estop-active");
+                await fetch("/api/resume", {method: "POST"});
+                addLog("E-Stop released — robot can resume.");
             }
         }
 

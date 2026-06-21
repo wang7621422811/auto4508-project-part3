@@ -10,8 +10,8 @@ import numpy as np
 CAMERA_FORWARD_M = 0.24
 OBSTACLE_HALF_DEPTH_M = 0.25
 
-# laser_frame 相对 base_link 的前向偏移（URDF: chassis xyz="0 0 0.177" + laser xyz="0.2 0 0.104"）
-# X 方向: 0 + 0.20 = 0.20 m
+# Forward offset of laser_frame relative to base_link (URDF: chassis xyz="0 0 0.177" + laser xyz="0.2 0 0.104")
+# X: 0 + 0.20 = 0.20 m
 LASER_FORWARD_M = 0.20
 
 
@@ -25,11 +25,11 @@ def depth_to_odom(
     cam_hfov: float,
 ) -> Optional[tuple[float, float, float]]:
     """
-    用机器人 odom 姿态和目标像素深度估算障碍物中心的 odom 坐标。
+    Estimate the odom coordinates of an obstacle's centre using robot odom pose and pixel depth.
 
-    这是给 detector 使用的轻量路径：不依赖 TF，只要求有 /odom 和深度图。
-    深度图量到的是障碍物前表面，因此这里按仿真方块尺寸补偿 0.25m。
-    返回 (x, y, depth_m)，深度不可用时返回 None。
+    Lightweight path for detectors: no TF required, only /odom and a depth frame.
+    Depth frames measure the obstacle's front surface, so 0.25 m (half the simulated cube size) is added.
+    Returns (x, y, depth_m), or None if depth is unavailable.
     """
     if depth_frame is None:
         return None
@@ -69,10 +69,11 @@ def scan_range_at_bearing(
     n_beams: int = 7,
 ) -> Optional[float]:
     """
-    从 LaserScan 取指定方位角附近 n_beams 条光束的中位测距值。
+    Return the median range of n_beams beams nearest to bearing_rad in a LaserScan.
 
-    bearing_rad: 机器人坐标系方位角，正值=左(+Y), 负值=右(-Y)，与 ROS LaserScan 约定一致。
-    返回中位距离（米），无有效光束时返回 None。
+    bearing_rad: bearing in robot frame, positive = left (+Y), negative = right (-Y),
+                 consistent with ROS LaserScan convention.
+    Returns median range in metres, or None if no valid beams are found.
     """
     if scan is None:
         return None
@@ -106,20 +107,20 @@ def lidar_to_odom(
     n_beams: int = 7,
 ) -> Optional[tuple[float, float, float]]:
     """
-    用相机像素 cx_px 确定方位角，用雷达测距代替深度相机，估算障碍物 odom 坐标。
+    Estimate obstacle odom coordinates using camera pixel cx_px for bearing and lidar range instead of a depth camera.
 
-    符号约定（与 ROS LaserScan 一致）：
+    Sign convention (consistent with ROS LaserScan):
       bearing = atan2(W/2 - cx_px, fx)
-      正值 = 物体在图像左侧 = 机器人左侧(+Y)
-      负值 = 物体在图像右侧 = 机器人右侧(-Y)
+      positive = object on left in image = robot left (+Y)
+      negative = object on right in image = robot right (-Y)
 
-    half_depth_m: 障碍物半深度补偿（将雷达前表面测距转换到障碍物中心），
-                  颜色障碍物取 0.25m，希腊字母桶取 0.0m。
+    half_depth_m: half-depth compensation to convert lidar front-surface range to obstacle centre;
+                  use 0.25 m for colour obstacles, 0.0 m for Greek-letter barrels.
 
-    返回 (obs_x, obs_y, range_m)，雷达无有效读数时返回 None。
+    Returns (obs_x, obs_y, range_m), or None if lidar has no valid reading.
     """
     fx = (img_w / 2.0) / math.tan(cam_hfov / 2.0)
-    # 正确符号：小 cx_px（图像左侧）= 机器人左侧 = 正方位角
+    # Correct sign: small cx_px (left of image) = robot left = positive bearing
     bearing = math.atan2((img_w / 2.0) - cx_px, fx)
 
     range_m = scan_range_at_bearing(scan, bearing, n_beams)
@@ -127,7 +128,7 @@ def lidar_to_odom(
         return None
 
     heading = robot_yaw + bearing
-    # 以雷达安装点（前移 LASER_FORWARD_M）为起点计算障碍物位置
+    # Compute obstacle position from the lidar mount point (offset LASER_FORWARD_M forward)
     laser_x = robot_x + LASER_FORWARD_M * math.cos(robot_yaw)
     laser_y = robot_y + LASER_FORWARD_M * math.sin(robot_yaw)
     total_range = range_m + half_depth_m

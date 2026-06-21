@@ -1,134 +1,137 @@
 # =============================================================================
-# slam_toolbox.yaml — slam_toolbox 在线异步建图配置 (M2.C2.1)
+# slam_toolbox.yaml — slam_toolbox online async mapping configuration (M2.C2.1)
 # =============================================================================
 #
-# 工作原理：
-#   slam_toolbox 订阅 /scan（激光点云）和 TF odom→base_link（EKF 提供），
-#   用扫描匹配(ICP) + 闭环检测 构建 occupancy grid 地图，
-#   同时发布 TF map→odom，补全完整 TF 链：
+# How it works:
+#   slam_toolbox subscribes to /scan (laser point cloud) and TF odom→base_link
+#   (provided by EKF), builds an occupancy grid map using scan matching (ICP)
+#   + loop-closure detection, and publishes TF map→odom to complete the full TF chain:
 #       map → odom → base_link → laser_frame / imu_link / ...
 #
-# 数据流：
+# Data flow:
 #   /scan (LaserScan)  ──┐
 #                        ├─► slam_toolbox ─► /map (OccupancyGrid)
 #   TF: odom→base_link ──┘              └─► TF: map→odom
-#                                        └─► /slam_toolbox/* (服务)
+#                                        └─► /slam_toolbox/* (services)
 #
-# 运行模式选择：
-#   mapping     ← 本配置：在线从零开始建图（M2/M4 探索）
-#   localization：已有地图，定位不更新地图（M6 物理机可能用到）
-#   lifelong    ：持续融合更新地图
+# Mode selection:
+#   mapping     ← this config: online mapping from scratch (M2/M4 exploration)
+#   localization: localise against existing map without updating it (M6 physical robot)
+#   lifelong    : continuously merge and update the map
 #
 # =============================================================================
 
 slam_toolbox:
   ros__parameters:
 
-    # ── 坐标系（必须与 EKF / URDF 完全一致）─────────────────────────────────
-    odom_frame: odom          # 里程计帧，EKF 发布 odom→base_link
-    map_frame: map            # 全局地图帧，SLAM 发布 map→odom
-    base_frame: base_link     # 机器人本体帧
-    scan_topic: /scan         # 激光雷达话题（与 ros_gz_bridge 桥接一致）
+    # ── coordinate frames (must match EKF / URDF exactly) ────────────────────
+    odom_frame: odom          # odometry frame; EKF publishes odom→base_link
+    map_frame: map            # global map frame; SLAM publishes map→odom
+    base_frame: base_link     # robot body frame
+    scan_topic: /scan         # lidar topic (matches ros_gz_bridge bridge)
 
-    # ── 运行模式 ─────────────────────────────────────────────────────────────
-    # mapping：每帧扫描都尝试改善地图，支持闭环检测和地图序列化
+    # ── operating mode ────────────────────────────────────────────────────────
+    # mapping: tries to improve the map on every scan; supports loop closing and serialisation
     mode: mapping
 
-    # ── 地图分辨率 ───────────────────────────────────────────────────────────
-    # 每格 0.05m（5cm）。15×15m 地图约 300×300 = 90,000 格。
-    # 更小（0.025）细节更好但计算慢；更大（0.1）快但精度低。
+    # ── map resolution ────────────────────────────────────────────────────────
+    # 0.05 m per cell (5 cm). A 15×15 m map ≈ 300×300 = 90,000 cells.
+    # Smaller (0.025) gives more detail but is slower; larger (0.1) is faster but less precise.
     resolution: 0.05
 
-    # ── 激光参数 ─────────────────────────────────────────────────────────────
-    # 超过此距离的扫描点被忽略。Pioneer SICK 激光有效范围约 10-25m，
-    # 设 15m 与 URDF 内雷达配置匹配，避免噪声点污染地图。
+    # ── laser parameters ──────────────────────────────────────────────────────
+    # Scan points beyond this range are ignored. Pioneer SICK lidar effective range ≈ 10-25 m;
+    # 15 m matches the URDF lidar config and avoids noise points polluting the map.
     max_laser_range: 15.0
 
-    # ── 频率控制 ─────────────────────────────────────────────────────────────
-    # throttle_scans=1：处理每一帧扫描（不跳帧）。
-    # 若 CPU 压力大可改为 2（每隔 1 帧处理 1 帧）。
+    # ── frequency control ─────────────────────────────────────────────────────
+    # throttle_scans=1: process every scan frame (no skipping).
+    # If CPU load is high, set to 2 (process every other frame).
     throttle_scans: 1
 
-    # 两次处理之间机器人至少移动的距离（m）。
-    # 静止时不重复插入相同扫描，减少计算量和噪声积累。
-    # 注：首帧扫描无论如何都会被处理；此参数控制后续帧。
-    # 0.2m（原 0.5m）：让地图在短距离移动后就能更新，避免小区域建图不足。
+    # Minimum distance the robot must travel between two processed scans (m).
+    # Avoids inserting duplicate scans while stationary, reducing computation and noise.
+    # Note: the first scan is always processed; this parameter controls subsequent frames.
+    # 0.2 m (was 0.5 m): allows map updates after short movements, preventing under-mapping.
     minimum_travel_distance: 0.2
 
-    # 两次处理之间机器人至少转过的角度（rad，约 28°）。
-    # 原 0.2 rad（11°）时 Nav2 Spin 恢复（1.5 rad/s）每 0.13s 就触发一次扫描处理，
-    # ICP 匹配频繁失败退回 odom，造成"幽灵墙"（同一面墙记录多次）。
-    # 改为 0.5 rad（28°）：旋转时每帧间隔更大，ICP 有足够角度差可可靠匹配。
+    # Minimum heading change between two processed scans (rad, ≈ 28°).
+    # At 0.2 rad (11°) the Nav2 Spin recovery (1.5 rad/s) triggered a scan every 0.13 s;
+    # ICP matching failed repeatedly and fell back to odom, creating "ghost walls"
+    # (same wall recorded multiple times).
+    # 0.5 rad (28°): larger inter-frame angle gives ICP enough angular difference to match reliably.
     minimum_travel_heading: 0.5
 
-    # 相邻两帧扫描的最短时间间隔（秒）。
-    # 原 0.5s 太保守（仅 2 Hz），机器人稍快移动/旋转时 slam_toolbox 来不及
-    # 处理扫描产生 map→odom 修正，导致 TF 一直为 identity，RViz 中障碍物
-    # 看起来跟随机器人旋转。改为 0.05s（~20 Hz）确保每帧扫描都被处理。
+    # Minimum time interval between two processed scans (seconds).
+    # At 0.5 s (only 2 Hz), fast robot motion/rotation meant slam_toolbox could not
+    # produce map→odom corrections quickly enough, leaving TF as identity and making
+    # obstacles appear to rotate with the robot in RViz.
+    # 0.05 s (≈ 20 Hz) ensures every scan is processed.
     minimum_time_interval: 0.05
 
-    # ── TF 发布 ──────────────────────────────────────────────────────────────
-    # map→odom TF 的发布周期（秒）。
-    # 原 0.02s≈50Hz 过高，ARM64 VM 实际只能跑到 ~10Hz，导致 TF 发布时间戳
-    # 不稳定，RViz 渲染时可能查不到对应 TF 而出现"障碍物随机器人旋转"。
-    # 改为 0.1s≈10Hz，与系统实际能力匹配，TF 发布稳定。
+    # ── TF publishing ─────────────────────────────────────────────────────────
+    # Period at which map→odom TF is published (seconds).
+    # At 0.02 s (≈ 50 Hz) the ARM64 VM could only sustain ≈ 10 Hz in practice,
+    # causing unstable TF timestamps and "obstacles rotating with the robot" in RViz.
+    # 0.1 s (≈ 10 Hz) matches actual system capability and gives stable TF output.
     transform_publish_period: 0.1
 
-    # 查询 TF（如 odom→base_link）时允许的最大等待时间（秒）。
-    # EKF 以 15Hz 发布，0.3s 足够等到 2 帧以上。
+    # Maximum wait time when querying TF (e.g. odom→base_link) in seconds.
+    # EKF publishes at 15 Hz; 0.3 s is enough to receive at least 2 frames.
     transform_timeout: 0.3
 
-    # TF buffer 缓存时长（秒）。较大的值允许 SLAM 处理稍旧的扫描。
+    # TF buffer cache duration (seconds). Larger values allow SLAM to process slightly older scans.
     tf_buffer_duration: 30.0
 
-    # ── 地图更新 ─────────────────────────────────────────────────────────────
-    # 地图重新栅格化发布周期（秒）。
-    # 原 5.0s 太慢，改为 1.0s 让 RViz 中的 /map 和 global_costmap 尽快反映最新扫描。
+    # ── map update ────────────────────────────────────────────────────────────
+    # Period at which the map is re-rasterised and published (seconds).
+    # At 5.0 s updates were too infrequent; 1.0 s lets /map and global_costmap in RViz
+    # reflect the latest scans much sooner.
     map_update_interval: 1.0
 
-    # ── 扫描匹配（ICP 精化）───────────────────────────────────────────────────
-    # use_scan_matching=true：用扫描匹配修正 odom 误差，提高建图精度。
-    # 对在草地/不平地面运动的 Pioneer 尤其重要（odom 容易打滑）。
+    # ── scan matching (ICP refinement) ────────────────────────────────────────
+    # use_scan_matching=true: use scan matching to correct odometry error, improving map accuracy.
+    # Especially important for Pioneer moving over grass/uneven ground where odom slips.
     use_scan_matching: true
     use_scan_barycenter: true
 
-    # ── 扫描缓冲区 ───────────────────────────────────────────────────────────
-    # 内部维护最近 N 帧扫描用于扫描匹配。10 帧在内存和精度之间取得平衡。
+    # ── scan buffer ───────────────────────────────────────────────────────────
+    # Number of recent scans kept internally for scan matching. 10 balances memory and accuracy.
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
 
-    # ── 闭环检测 ─────────────────────────────────────────────────────────────
-    # 机器人回到之前去过的区域时，SLAM 识别出已知场景并"缝合"地图，
-    # 消除长时间漂移积累的误差（这是 SLAM 区别于纯 odom 的核心价值）。
+    # ── loop-closure detection ────────────────────────────────────────────────
+    # When the robot returns to a previously visited area, SLAM recognises the scene
+    # and "stitches" the map, eliminating accumulated drift (the key advantage of SLAM over pure odom).
     do_loop_closing: true
 
-    # 连续 N 帧扫描必须在闭环候选附近才触发闭环，防止误检。
+    # N consecutive scans must be near a loop-closure candidate before it is triggered, preventing false closures.
     loop_match_minimum_chain_size: 10
 
-    # 闭环搜索半径（m）。机器人须在此范围内才尝试闭环匹配。
+    # Loop-closure search radius (m). The robot must be within this distance to attempt a loop match.
     loop_search_maximum_distance: 3.0
 
-    # 闭环匹配质量阈值（粗/精两级）：0~1，越高要求越严格越不易误闭环。
+    # Loop-closure match quality thresholds (coarse and fine): 0–1, higher = stricter, fewer false closures.
     loop_match_maximum_variance_coarse: 3.0
     loop_match_minimum_response_coarse: 0.35
     loop_match_minimum_response_fine: 0.45
 
-    # 链接当前扫描与前一次匹配的最大距离（m）。
+    # Maximum distance to link the current scan to the previous matched scan (m).
     link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5
 
-    # ── 相关性搜索参数（粗匹配用）────────────────────────────────────────────
-    # 在 ±0.5m × ±0.5m 范围内以 0.01m 步长搜索最优位姿。
+    # ── correlation search parameters (used in coarse matching) ───────────────
+    # Search for the optimal pose within ±0.5 m × ±0.5 m at 0.01 m resolution.
     correlation_search_space_dimension: 0.5
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.1
 
-    # 闭环时在更大的 ±8m 范围内搜索。
+    # During loop closure, search in a larger ±8 m range.
     loop_search_space_dimension: 8.0
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
 
-    # ── 角度/距离惩罚参数（扫描匹配质量评分）────────────────────────────────
+    # ── angular/distance penalty parameters (scan matching quality score) ─────
     distance_variance_penalty: 0.5
     angle_variance_penalty: 1.0
     fine_search_angle_offset: 0.00349      # ≈ 0.2°
@@ -138,8 +141,8 @@ slam_toolbox:
     minimum_distance_penalty: 0.5
     use_response_expansion: true
 
-    # ── 求解器（Ceres 图优化）────────────────────────────────────────────────
-    # slam_toolbox 内部用 Ceres Solver 做位姿图优化（处理闭环约束）。
+    # ── solver (Ceres pose graph optimisation) ────────────────────────────────
+    # slam_toolbox uses Ceres Solver internally for pose graph optimisation (handles loop-closure constraints).
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
     ceres_preconditioner: SCHUR_JACOBI
@@ -147,14 +150,14 @@ slam_toolbox:
     ceres_dogleg_type: TRADITIONAL_DOGLEG
     ceres_loss_function: None
 
-    # ── 内存 ─────────────────────────────────────────────────────────────────
-    # 为 SLAM 栈分配 40MB。大地图或长时间建图时可增大。
+    # ── memory ────────────────────────────────────────────────────────────────
+    # Allocate 40 MB for the SLAM stack. Increase for large maps or long mapping sessions.
     stack_size_to_use: 40000000
 
-    # ── 调试 ─────────────────────────────────────────────────────────────────
-    # false：生产/演示时关闭详细日志，避免终端刷屏。
-    # true ：出现地图错位/漂移时开启，结合 ros2 topic echo /map 定位问题。
+    # ── debugging ─────────────────────────────────────────────────────────────
+    # false: disable verbose logging for production/demo (avoids terminal flood).
+    # true : enable when map drift or misalignment occurs; combine with ros2 topic echo /map.
     debug_logging: false
 
-    # 允许 RViz 的 slam_toolbox 插件手动拖拽地图约束（建图调试专用）。
+    # Allow the RViz slam_toolbox plugin to manually drag map constraints (mapping debug only).
     enable_interactive_mode: true

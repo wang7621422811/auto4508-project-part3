@@ -1,56 +1,53 @@
 #!/usr/bin/env python3
 """
-exploration_node.py — Frontier-based 自主探索节点 (M4.C4.1)
+exploration_node.py — Frontier-based autonomous exploration node (M4.C4.1)
 
 ================================================================================
-算法来源 (Algorithm Reference)
+Algorithm Reference
 ================================================================================
 
-┌───────────────┬──────────────────────────────────┬────────────────────────────────────────────────────┐
-│     模块      │               原版               │                  新版（参考代码）                  │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ 地图预处理    │ 无                               │ _preprocess_map() 5次迭代形态学滤波                │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ frontier 检测 │ numpy 位移（4-连通，与参考相同） │ _compute_frontier_cell_grid() 同算法，明确对应参考 │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ 聚类          │ 8-连通 BFS                       │ _compute_frontier_regions() 同算法，明确对应参考   │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ 评分          │ size / dist                      │ 0.99*(1/dist) + 0.01*size，极度偏近                │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ 可达性检查    │ 无，直接发目标等 20s 超时        │ ComputePathToPose 异步验证，不可达立即跳下一候选   │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ 多候选回退    │ 只选 1 个                        │ top-3 依次验证（参考 rank 0→1→2→3）                │
-├───────────────┼──────────────────────────────────┼────────────────────────────────────────────────────┤
-│ stuck 处理    │ 计数器清黑名单                   │ 保留，作为兜底                                     │
-└───────────────┴──────────────────────────────────┴────────────────────────────────────────────────────┘
+Core frontier detection logic adapted from:
+  https://github.com/adrian-soch/frontier_exploration  (MIT Licence)
+  Author: Adrian Sochaniwsky
+  Based on: B. Yamauchi, "A frontier-based approach for autonomous exploration,"
+            Proc. CIRA'97, doi: 10.1109/CIRA.1997.613851
 
+Differences from the reference implementation:
 
+  Module              | Reference                | This Implementation
+  --------------------|--------------------------|-------------------------------------------
+  Map preprocessing   | None                     | _preprocess_map(): 5-iter morph filter
+  Frontier detection  | numpy shift (4-conn)     | _compute_frontier_cell_grid() same alg.
+  Clustering          | 8-connected BFS          | _compute_frontier_regions() same alg.
+  Scoring             | size / dist              | 0.99*(1/dist)+0.01*size (distance-biased)
+  Reachability check  | None (20 s timeout)      | ComputePathToPose async validation
+  Multi-candidate     | Top-1 only               | Top-3 verified in sequence (rank 0→3)
+  Stuck handling      | Counter clears blacklist | Retained as fallback
 
-核心探测逻辑移植自 another_project_reference/frontier_exploration：
+Ported functions (from reference):
+  1. preprocessMap           — 5-iter morph filter, fills isolated unknown holes
+  2. computeFrontierCellGrid — 4-connected free-unknown boundary detection
+  3. computeFrontierRegions  — 8-connected BFS clustering, centroid → world coords
+  4. selectFrontier          — alpha=0.99 weighted score (strongly distance-biased)
+  5. get_reachable_goal      — ComputePathToPose check before sending goal,
+                               tries up to top_n candidates
 
-  1. preprocessMap       — 5次迭代形态学滤波，消除孤立 unknown 小孔
-  2. computeFrontierCellGrid — 4-连通 free-unknown 边界检测
-  3. computeFrontierRegions  — 8-连通 BFS 聚类，质心转世界坐标
-  4. selectFrontier      — alpha=0.99 加权评分，极度偏近距离
-  5. get_reachable_goal  — 发目标前调 ComputePathToPose 验证可达性，
-                           最多尝试 top_n 个候选
+Main-loop state machine:
+  IDLE → extract frontiers → select top-N candidates → PATH_CHECK (async)
+  PATH_CHECK → path found     → NAVIGATING
+             → path not found → try next candidate
+  NAVIGATING → success / failure / timeout → IDLE
 
-主循环状态机：
-  IDLE → 提取 frontier → 选 top-N 候选 → PATH_CHECK（异步）
-  PATH_CHECK → 路径存在 → NAVIGATING
-             → 路径不存在 → 试下一个候选
-  NAVIGATING → 成功/失败/超时 → IDLE
-
-接口 (Interfaces)：
-  订阅：
-    /map                       nav_msgs/OccupancyGrid    slam_toolbox 地图
-    /part3/exploration/enable  std_msgs/Bool              外部开关
-  发布：
-    /part3/mapping/map_status  std_msgs/String            探索进度
-  Action Client：
+Interfaces:
+  Subscriptions:
+    /map                       nav_msgs/OccupancyGrid    SLAM map (slam_toolbox)
+    /part3/exploration/enable  std_msgs/Bool             External enable/disable
+  Publishers:
+    /part3/mapping/map_status  std_msgs/String           Exploration progress
+  Action Clients:
     /navigate_to_pose          nav2_msgs/action/NavigateToPose
-    /compute_path_to_pose      nav2_msgs/action/ComputePathToPose  (可达性验证)
-  TF 查询：
+    /compute_path_to_pose      nav2_msgs/action/ComputePathToPose  (reachability)
+  TF:
     map → base_link
 ================================================================================
 """
@@ -72,9 +69,10 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 
-# TRANSIENT_LOCAL：与 mapping_service 的 _enable_pub 匹配。
-# 两端同时为 TRANSIENT_LOCAL 才能触发 late-join replay，
-# 保证 exploration_node 在 mapping_service 发布 enable=true 后 45s 才启动时仍能收到消息。
+# TRANSIENT_LOCAL matches mapping_service._enable_pub.
+# Both ends must be TRANSIENT_LOCAL to trigger late-join replay so that
+# exploration_node still receives the enable=true message even if it starts
+# 45 s after mapping_service publishes it.
 _ENABLE_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -90,7 +88,7 @@ from tf2_ros import Buffer, TransformListener
 
 
 class ExplorationNode(Node):
-    """Frontier-based 自主探索节点（参考代码算法移植版）。"""
+    """Frontier-based autonomous exploration node (algorithm ported from reference)."""
 
     _CELL_FREE = 0
     _CELL_OCC  = 100
@@ -99,37 +97,39 @@ class ExplorationNode(Node):
     def __init__(self):
         super().__init__('exploration_node')
 
-        # ── 参数声明 ──────────────────────────────────────────────────────────
+        # ── parameter declarations ─────────────────────────────────────────────
         self.declare_parameter('auto_start', False)
-        # frontier 搜索边界（m）：17m 给边界 frontier 留余量
+        # search_area_size (m): 17 m gives a margin for frontier cells near the arena wall
         self.declare_parameter('search_area_size', 17.0)
-        # coverage 统计边界（m）：必须 ≤ arena 实际边长，避免墙外 unknown 压低分母
+        # coverage_area_size (m): must be ≤ actual arena side length to avoid
+        # permanent-unknown wall cells inflating the denominator
         self.declare_parameter('coverage_area_size', 15.0)
         self.declare_parameter('home_x', 0.0)
         self.declare_parameter('home_y', 0.0)
         self.declare_parameter('auto_set_home', True)
-        # 参考代码默认 25 cells；15x15 较小场景用 10 避免过度过滤
+        # reference default is 25 cells; 10 suits the smaller 15x15 arena
         self.declare_parameter('min_frontier_size', 10)
         self.declare_parameter('coverage_done_threshold', 0.90)
-        # 20s：Pioneer 1.5m/s × 对角线 21m ≈ 14s，留余量
+        # 20 s: Pioneer at 1.5 m/s across 21 m diagonal ≈ 14 s, with margin
         self.declare_parameter('nav_timeout_sec', 20.0)
         self.declare_parameter('frontier_blacklist_radius', 0.5)
         self.declare_parameter('loop_rate_hz', 1.0)
-        # 参考代码 preprocessMap 迭代次数
+        # number of morphological filter iterations (reference: preprocessMap)
         self.declare_parameter('preprocess_iters', 5)
-        # 可达性检查最多尝试 top-N 候选（参考代码尝试 rank 0→3）
+        # max top-N candidates to try for reachability (reference tries rank 0→3)
         self.declare_parameter('top_n_candidates', 3)
-        # 评分权重：score = alpha*(1/dist) + (1-alpha)*size，0.99 极度偏近
+        # scoring weight: score = alpha*(1/dist) + (1-alpha)*size; 0.99 = strongly distance-biased
         self.declare_parameter('alpha', 0.99)
-        # 探索完成后返回真实启动点，而不是用于 coverage/search 的 home 中心点。
+        # return to actual start pose, not the coverage/search home centre
         self.declare_parameter('return_to_start_pose', True)
-        # coverage=done 会触发 map_manager 保存地图；稍等再发 home goal，避免 Nav2/SLAM 瞬时负载竞争。
+        # coverage=done triggers map_manager to save; delay before sending home goal
+        # to avoid competing with Nav2/SLAM on the same CPU burst
         self.declare_parameter('return_home_delay_sec', 3.0)
         self.declare_parameter('return_home_max_retries', 2)
         self.declare_parameter('return_home_retry_delay_sec', 3.0)
 
-        # get_parameter().value 在 Pylance 下推断为 Unknown|None，用 `or default` 消除警告
-        # （运行时 declare_parameter 已保证非 None）
+        # get_parameter().value is inferred as Unknown|None by Pylance;
+        # use `or default` to suppress the warning (declare_parameter guarantees non-None at runtime)
         self._auto_start: bool        = bool(self.get_parameter('auto_start').value)
         self._search_area: float      = float(self.get_parameter('search_area_size').value or 17.0)
         self._coverage_area: float    = float(self.get_parameter('coverage_area_size').value or 15.0)
@@ -150,39 +150,39 @@ class ExplorationNode(Node):
             self.get_parameter('return_home_retry_delay_sec').value or 3.0
         )
 
-        # ── 内部状态 ──────────────────────────────────────────────────────────
+        # ── internal state ────────────────────────────────────────────────────
         self._active: bool            = self._auto_start
         self._map: OccupancyGrid | None = None
 
-        # 导航状态
+        # navigation state
         self._goal_id: int            = 0
         self._nav_goal_id: int        = -1
         self._nav_in_progress: bool   = False
         self._nav_start_time: float   = 0.0
         self._current_goal: tuple[float, float] | None = None
 
-        # 路径检查状态（参考代码 get_reachable_goal）
+        # path-check state (reference: get_reachable_goal)
         self._checking_path: bool     = False
         self._path_check_id: int      = 0
         self._candidates: list[tuple[float, float]] = []
         self._candidate_idx: int      = 0
 
-        # 接近目标时更新 heading 标志（参考代码 set_goal_heading）
-        # 防止固定 yaw 导致机器人在到达位置后大幅旋转/倒车
+        # heading-update flag (reference: set_goal_heading)
+        # prevents a locked yaw from forcing a large spin / reverse on arrival
         self._heading_updated: bool   = False
-        # 距目标 ≤ 此距离时把目标朝向改为机器人当前朝向（参考代码 0.25m）
+        # update goal heading when distance remaining ≤ this threshold (reference: 0.25 m)
         self._heading_update_dist: float = 0.5
 
-        # 黑名单
+        # blacklist / visited
         self._blacklist: list[tuple[float, float]] = []
         self._visited:   list[tuple[float, float]] = []
         self._visited_radius: float   = 0.10
 
-        # stuck 计数器：frontiers=0 连续 N 轮后清黑名单
+        # stuck counter: clear blacklist after N consecutive zero-frontier cycles
         self._stuck_cycles: int       = 0
         self._stuck_reset_cycles: int = 15
 
-        # 上一次计算的覆盖率，供自适应参数使用
+        # last computed coverage, used for adaptive parameter adjustment
         self._last_coverage: float    = 0.0
 
         self._home_initialized: bool  = not self._auto_set_home
@@ -191,7 +191,7 @@ class ExplorationNode(Node):
         self._return_home_attempt: int = 0
         self._return_home_target: tuple[float, float] | None = None
 
-        # ── QoS ──────────────────────────────────────────────────────────────
+        # ── QoS profiles ──────────────────────────────────────────────────────
         _map_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -199,39 +199,39 @@ class ExplorationNode(Node):
             depth=1,
         )
 
-        # ── 订阅 / 发布 ───────────────────────────────────────────────────────
+        # ── subscriptions / publishers ────────────────────────────────────────
         self.create_subscription(OccupancyGrid, '/map', self._map_cb, _map_qos)
         self.create_subscription(Bool, '/part3/exploration/enable', self._enable_cb, _ENABLE_QOS)
         self._status_pub = self.create_publisher(String, '/part3/mapping/map_status', 10)
 
-        # ── TF ───────────────────────────────────────────────────────────────
+        # ── TF listener ──────────────────────────────────────────────────────
         self._tf_buf      = Buffer()
         self._tf_listener = TransformListener(self._tf_buf, self)
 
-        # ── Action 客户端 ─────────────────────────────────────────────────────
+        # ── action clients ───────────────────────────────────────────────────
         self._nav_client  = ActionClient(self, NavigateToPose,    '/navigate_to_pose')
         self._path_client = ActionClient(self, ComputePathToPose, '/compute_path_to_pose')
 
         self._nav_server_ready: bool = False
         if self._nav_client.wait_for_server(timeout_sec=5.0):
             self._nav_server_ready = True
-            self.get_logger().info('/navigate_to_pose 已就绪')
+            self.get_logger().info('/navigate_to_pose ready')
         else:
-            self.get_logger().warn('/navigate_to_pose 5s 内未就绪，将在发目标前重试')
+            self.get_logger().warn('/navigate_to_pose not ready within 5 s; will retry before sending goal')
 
-        # ── 主循环定时器 ──────────────────────────────────────────────────────
+        # ── main-loop timer ──────────────────────────────────────────────────
         loop_hz: float = float(self.get_parameter('loop_rate_hz').value)
         self.create_timer(1.0 / loop_hz, self._loop)
 
         self.get_logger().info(
-            f'exploration_node 启动。 auto_start={self._auto_start}'
+            f'exploration_node started. auto_start={self._auto_start}'
             f' search_area={self._search_area}m coverage_area={self._coverage_area}m'
             f' alpha={self._alpha} preprocess_iters={self._preprocess_iters}'
             f' top_n={self._top_n} nav_timeout={self._nav_timeout}s'
         )
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  回调
+    #  Callbacks
     # ═══════════════════════════════════════════════════════════════════════
 
     def _map_cb(self, msg: OccupancyGrid) -> None:
@@ -239,7 +239,7 @@ class ExplorationNode(Node):
 
     def _enable_cb(self, msg: Bool) -> None:
         if msg.data and not self._active:
-            self.get_logger().info('[Enable] 开始自主探索')
+            self.get_logger().info('[Enable] starting autonomous exploration')
             self._active = True
             self._exploration_done = False
             self._blacklist.clear()
@@ -249,25 +249,25 @@ class ExplorationNode(Node):
             self._return_home_attempt = 0
             self._return_home_target = None
         elif not msg.data and self._active:
-            self.get_logger().info('[Enable] 停止探索')
+            self.get_logger().info('[Enable] stopping exploration')
             self._active = False
             self._cancel_nav()
             self._checking_path = False
             self._candidates.clear()
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  主循环
+    #  Main loop
     # ═══════════════════════════════════════════════════════════════════════
 
     def _loop(self) -> None:
         """
-        状态机：
-          未激活           → 直接返回
-          无地图           → 等待
-          home 未初始化   → 从 TF 读取，等待
-          导航进行中       → 仅检查超时
-          路径检查进行中   → 等待异步回调
-          空闲             → 提取 frontier → 选 top-N → 异步路径检查
+        State machine:
+          inactive         → return immediately
+          no map yet       → wait
+          home not set     → read from TF, wait
+          navigation active → check timeout only
+          path-check active → wait for async callback
+          idle             → extract frontiers → select top-N → async path check
         """
         if not self._active or self._exploration_done:
             return
@@ -280,10 +280,10 @@ class ExplorationNode(Node):
             if pose is not None:
                 self._start_pose = pose
                 self.get_logger().info(
-                    f'[Start] 记录启动点 ({pose[0]:.2f}, {pose[1]:.2f})'
+                    f'[Start] recorded start pose ({pose[0]:.2f}, {pose[1]:.2f})'
                 )
 
-        # ── 初始化 home ───────────────────────────────────────────────────────
+        # ── initialise home position ──────────────────────────────────────────
         if not self._home_initialized:
             pose = self._robot_pose()
             if pose is None:
@@ -293,12 +293,12 @@ class ExplorationNode(Node):
             self.get_logger().info(f'[Home] ({self._home_x:.2f}, {self._home_y:.2f})')
             return
 
-        # ── 导航中：仅检查超时 ────────────────────────────────────────────────
+        # ── navigation in progress: check timeout only ────────────────────────
         if self._nav_in_progress:
             elapsed = time.monotonic() - self._nav_start_time
             if elapsed > self._nav_timeout:
                 self.get_logger().warn(
-                    f'[Timeout] {elapsed:.0f}s，放弃目标 {self._current_goal}'
+                    f'[Timeout] {elapsed:.0f}s — abandoning goal {self._current_goal}'
                 )
                 self._cancel_nav()
                 if self._current_goal:
@@ -306,14 +306,14 @@ class ExplorationNode(Node):
                 self._current_goal = None
             return
 
-        # ── 路径检查中：等待异步回调 ──────────────────────────────────────────
+        # ── path check in progress: wait for async callback ──────────────────
         if self._checking_path:
             return
 
-        # ── 空闲：提取 frontier，计算覆盖率 ──────────────────────────────────
+        # ── idle: extract frontiers and compute coverage ──────────────────────
         frontiers = self._extract_frontiers()
         coverage  = self._compute_coverage()
-        self._last_coverage = coverage   # 供自适应参数使用
+        self._last_coverage = coverage   # used by adaptive parameters
         self._pub_status(coverage, frontiers)
 
         if coverage >= self._coverage_threshold:
@@ -321,18 +321,18 @@ class ExplorationNode(Node):
             return
 
         if len(frontiers) == 0:
-            # frontiers 为空：区分"黑名单死锁"和"真正探索完"
+            # no frontiers: could be blacklist deadlock or genuinely finished
             self._stuck_cycles += 1
             if self._stuck_cycles >= self._stuck_reset_cycles:
                 self.get_logger().warn(
-                    f'[Stuck×{self._stuck_cycles}] 清空 {len(self._blacklist)} 个黑名单点，强制重试'
+                    f'[Stuck×{self._stuck_cycles}] clearing {len(self._blacklist)} blacklist entries, forcing retry'
                 )
                 self._blacklist.clear()
                 self._stuck_cycles = 0
             else:
                 self.get_logger().warn(
                     f'[Stuck {self._stuck_cycles}/{self._stuck_reset_cycles}]'
-                    f' coverage={coverage:.1%}，等待地图更新...',
+                    f' coverage={coverage:.1%}, waiting for map update...',
                     throttle_duration_sec=5.0,
                 )
             self._pub_status(coverage, frontiers, stuck=True)
@@ -340,28 +340,28 @@ class ExplorationNode(Node):
 
         robot_pose = self._robot_pose()
         if robot_pose is None:
-            self.get_logger().warn('TF 失败，跳过本轮', throttle_duration_sec=3.0)
+            self.get_logger().warn('TF lookup failed, skipping this cycle', throttle_duration_sec=3.0)
             return
 
-        # ── 选 top-N 候选，依次路径检查（参考代码 get_reachable_goal） ────────
+        # ── select top-N candidates, check reachability in order (ref: get_reachable_goal) ──
         self._candidates  = self._select_frontiers_ranked(frontiers, robot_pose, self._top_n)
         if not self._candidates:
-            self.get_logger().warn('所有 frontier 距离过近，跳过', throttle_duration_sec=5.0)
+            self.get_logger().warn('All frontier candidates too close, skipping', throttle_duration_sec=5.0)
             return
 
         self._stuck_cycles  = 0
         self._candidate_idx = 0
         self._try_next_candidate(robot_pose)
 
-    # ─── 依次尝试候选（参考代码 rank 0→1→2→3）───────────────────────────────
+    # ─── try candidates in order (reference: rank 0→1→2→3) ─────────────────
 
     def _try_next_candidate(self, robot_pose: tuple[float, float] | None = None) -> None:
         if self._candidate_idx >= len(self._candidates):
-            self.get_logger().warn('[Candidates] 所有候选均不可达，等待下轮地图更新')
+            self.get_logger().warn('[Candidates] all candidates unreachable; waiting for next map update')
             return
         goal_x, goal_y = self._candidates[self._candidate_idx]
         self.get_logger().info(
-            f'[PathCheck] 候选 {self._candidate_idx + 1}/{len(self._candidates)}'
+            f'[PathCheck] candidate {self._candidate_idx + 1}/{len(self._candidates)}'
             f': ({goal_x:.2f}, {goal_y:.2f})'
         )
         self._start_path_check(goal_x, goal_y, robot_pose)
@@ -372,10 +372,10 @@ class ExplorationNode(Node):
         goal_y: float,
         robot_pose: tuple[float, float] | None,
     ) -> None:
-        """异步调用 ComputePathToPose 验证路径是否存在（参考代码 getPath）。"""
+        """Async ComputePathToPose call to verify a path exists (reference: getPath)."""
         if not self._path_client.wait_for_server(timeout_sec=0.5):
-            # planner 暂不可用，跳过验证直接发目标
-            self.get_logger().warn('[PathCheck] planner 不可用，跳过验证')
+            # planner temporarily unavailable; skip check and send goal directly
+            self.get_logger().warn('[PathCheck] planner unavailable, skipping path check')
             if robot_pose is None:
                 robot_pose = self._robot_pose()
             if robot_pose:
@@ -407,7 +407,7 @@ class ExplorationNode(Node):
             return
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().warn(f'[PathCheck] 请求被拒绝 {goal_xy}，跳至下一候选')
+            self.get_logger().warn(f'[PathCheck] request rejected {goal_xy}, trying next candidate')
             self._checking_path = False
             self._candidate_idx += 1
             self._try_next_candidate(self._robot_pose())
@@ -436,7 +436,7 @@ class ExplorationNode(Node):
         if path_ok:
             self.get_logger().info(
                 f'[PathCheck✓] ({goal_xy[0]:.2f},{goal_xy[1]:.2f})'
-                f' 路径可达（{len(path.poses)} poses），开始导航'
+                f' path reachable ({len(path.poses)} poses), starting navigation'
             )
             robot_pose = self._robot_pose()
             if robot_pose:
@@ -444,23 +444,23 @@ class ExplorationNode(Node):
         else:
             self.get_logger().warn(
                 f'[PathCheck✗] ({goal_xy[0]:.2f},{goal_xy[1]:.2f})'
-                f' 不可达 (status={status})，加入黑名单，试下一候选'
+                f' unreachable (status={status}), blacklisted, trying next candidate'
             )
             self._blacklist.append(goal_xy)
             self._candidate_idx += 1
             self._try_next_candidate(self._robot_pose())
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  Frontier 提取（参考代码三步算法）
+    #  Frontier extraction (3-step algorithm from reference)
     # ═══════════════════════════════════════════════════════════════════════
 
     def _extract_frontiers(self) -> list[tuple[float, float, int]]:
         """
-        三步流程（完全按参考代码）：
-          1. _preprocess_map         — preprocessMap，形态学滤波
-          2. _compute_frontier_cell_grid — computeFrontierCellGrid，4-连通检测
-          3. _compute_frontier_regions   — computeFrontierRegions，8-连通 BFS
-        再叠加搜索边界 / 黑名单 / visited 过滤。
+        Three-step pipeline (matches reference exactly):
+          1. _preprocess_map             — preprocessMap: morphological filter
+          2. _compute_frontier_cell_grid — computeFrontierCellGrid: 4-conn detection
+          3. _compute_frontier_regions   — computeFrontierRegions: 8-conn BFS
+        Followed by search-area / blacklist / visited filtering.
         """
         assert self._map is not None
         info = self._map.info
@@ -469,10 +469,11 @@ class ExplorationNode(Node):
         ox    = info.origin.position.x
         oy    = info.origin.position.y
 
-        # ── 自适应参数（高覆盖率阶段专用）──────────────────────────────────────
-        # 70%+ 后剩余区域为角落/窄通道，需要：
-        #   1. 减少形态学滤波次数（5→2），保留薄层 unknown，防止角落 frontier 被填充
-        #   2. 降低最小 cluster 大小（10→4），允许找到小角落 frontier
+        # ── adaptive parameters for high-coverage phase ───────────────────────
+        # Above 70% coverage the remaining unexplored area is corners/narrow passages:
+        #   1. reduce morph filter iterations (5→2) to preserve thin unknown layers
+        #      and avoid corner frontiers being filled in
+        #   2. lower minimum cluster size (10→4) to allow small corner frontiers
         cov = self._last_coverage
         if cov >= 0.80:
             effective_iters    = 2
@@ -484,19 +485,19 @@ class ExplorationNode(Node):
             effective_iters    = self._preprocess_iters
             effective_min_size = self._min_frontier_size
 
-        # Step 1：形态学预处理（自适应迭代次数）
+        # Step 1: morphological preprocessing (adaptive iteration count)
         grid = np.array(self._map.data, dtype=np.int8).reshape((H, W))
         grid = self._preprocess_map(grid, effective_iters)
 
-        # Step 2：4-连通 frontier cell 检测
+        # Step 2: 4-connected frontier cell detection
         frontier_mask = self._compute_frontier_cell_grid(grid, H, W)
 
-        # Step 3：8-连通 BFS 聚类（自适应最小 cluster 大小）
+        # Step 3: 8-connected BFS clustering (adaptive minimum cluster size)
         raw_regions = self._compute_frontier_regions(
             frontier_mask, H, W, res, ox, oy, effective_min_size
         )
 
-        # 搜索边界 + 黑名单 + visited 过滤
+        # search-area + blacklist + visited filtering
         half   = self._search_area / 2.0
         results: list[tuple[float, float, int]] = []
         n_oob = n_bl = n_vis = 0
@@ -517,20 +518,21 @@ class ExplorationNode(Node):
 
         if not results and raw_regions:
             self.get_logger().warn(
-                f'[Frontier] 全部过滤！'
-                f' 原始={len(raw_regions)} 越界={n_oob}'
-                f' 失败黑名单={n_bl}(r={self._blacklist_radius}m,共{len(self._blacklist)}点)'
-                f' visited={n_vis}(r={self._visited_radius}m,共{len(self._visited)}点)'
+                f'[Frontier] all filtered!'
+                f' raw={len(raw_regions)} oob={n_oob}'
+                f' blacklist={n_bl}(r={self._blacklist_radius}m, {len(self._blacklist)} entries)'
+                f' visited={n_vis}(r={self._visited_radius}m, {len(self._visited)} entries)'
             )
         return results
 
     def _preprocess_map(self, grid: np.ndarray, iters: int | None = None) -> np.ndarray:
         """
-        preprocessMap（参考代码）：
-        对每个非占用格，统计 8-连通邻居中 free 与 unknown 数量：
-          unknown >= free → 保持 unknown（不确定区域向外渗透）
-          unknown <  free → 改为 free  （孤立 unknown 小孔被填充）
-        iters：默认用 self._preprocess_iters；高覆盖率阶段传入更小值以保留角落 frontier。
+        preprocessMap (from reference):
+        For each non-occupied cell, count 8-connected neighbours that are free vs unknown:
+          unknown >= free → keep unknown  (uncertainty spreads outward)
+          unknown <  free → set to free   (isolated unknown holes are filled)
+        iters: defaults to self._preprocess_iters; pass a smaller value in high-coverage
+               phase to preserve corner frontiers.
         """
         H, W = grid.shape
         n = iters if iters is not None else self._preprocess_iters
@@ -562,19 +564,19 @@ class ExplorationNode(Node):
         self, grid: np.ndarray, H: int, W: int
     ) -> np.ndarray:
         """
-        computeFrontierCellGrid（参考代码，4-连通）：
-        free 格子且至少一个 4-连通邻居为 unknown → frontier cell。
-        使用切片位移，O(H×W) 向量化，无循环。
+        computeFrontierCellGrid (from reference, 4-connected):
+        A free cell with at least one 4-connected unknown neighbour is a frontier cell.
+        Implemented with slice shifts — O(H×W) vectorised, no Python loops.
         """
         free_mask = (grid == self._CELL_FREE)
         unk_mask  = (grid == self._CELL_UNK)
         has_unk_4 = np.zeros((H, W), dtype=bool)
         if H > 1:
-            has_unk_4[1:,  :] |= unk_mask[:-1, :]   # 上邻居
-            has_unk_4[:-1, :] |= unk_mask[1:,  :]   # 下邻居
+            has_unk_4[1:,  :] |= unk_mask[:-1, :]   # top neighbour
+            has_unk_4[:-1, :] |= unk_mask[1:,  :]   # bottom neighbour
         if W > 1:
-            has_unk_4[:,  1:] |= unk_mask[:, :-1]   # 左邻居
-            has_unk_4[:, :-1] |= unk_mask[:,  1:]   # 右邻居
+            has_unk_4[:,  1:] |= unk_mask[:, :-1]   # left neighbour
+            has_unk_4[:, :-1] |= unk_mask[:,  1:]   # right neighbour
         return free_mask & has_unk_4
 
     def _compute_frontier_regions(
@@ -585,10 +587,10 @@ class ExplorationNode(Node):
         min_size: int | None = None,
     ) -> list[tuple[float, float, int]]:
         """
-        computeFrontierRegions（参考代码，8-连通 BFS）：
-        对 frontier cells 做 8-连通聚类，计算质心世界坐标，过滤小 region。
-        min_size：默认用 self._min_frontier_size；高覆盖率阶段传入更小值以保留角落。
-        坐标转换：world = origin + (avg_pixel + 0.5) * resolution
+        computeFrontierRegions (from reference, 8-connected BFS):
+        Clusters frontier cells, computes centroid in world coordinates, filters small regions.
+        min_size: defaults to self._min_frontier_size; pass smaller value for high-coverage phase.
+        Coordinate conversion: world = origin + (avg_pixel + 0.5) * resolution
         """
         threshold = min_size if min_size is not None else self._min_frontier_size
         visited   = np.zeros((H, W), dtype=bool)
@@ -623,7 +625,7 @@ class ExplorationNode(Node):
             if size < threshold:
                 continue
 
-            # 质心坐标（+0.5 对齐格子中心）
+            # centroid in world coords (+0.5 aligns to cell centre)
             wx = ox + (sum_c / size + 0.5) * res
             wy = oy + (sum_r / size + 0.5) * res
             results.append((wx, wy, size))
@@ -631,7 +633,7 @@ class ExplorationNode(Node):
         return results
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  Frontier 选择（参考代码 selectFrontier，alpha 加权）
+    #  Frontier selection (reference: selectFrontier, alpha-weighted)
     # ═══════════════════════════════════════════════════════════════════════
 
     def _select_frontiers_ranked(
@@ -641,21 +643,22 @@ class ExplorationNode(Node):
         top_n: int,
     ) -> list[tuple[float, float]]:
         """
-        selectFrontier（参考代码 + 自适应 alpha）：
+        selectFrontier (reference + adaptive alpha):
         score = alpha*(1/dist) + (1-alpha)*size
-        低覆盖率：alpha=0.99（偏近，快速扩展已知区域）
-        高覆盖率：alpha 逐渐降低，给 size 更大权重，让机器人主动前往
-                  较远但信息量大的角落，而非在已探索区域周边反复微动。
-        返回 top_n 个目标坐标（降序），供依次路径检查。
+        Low coverage:  alpha=0.99 (distance-biased, expands known area quickly)
+        High coverage: alpha decreases so size gets more weight, driving the robot
+                       toward distant information-rich corners instead of micro-jitter
+                       around already-explored areas.
+        Returns top_n goal coordinates (descending score) for sequential path checks.
         """
         rx, ry = robot_pose
 
-        # 自适应 alpha：65% → 0.99 线性降至 85% → 0.40
+        # adaptive alpha: linearly decreases from 0.99 at 65% coverage to 0.40 at 85%
         cov = self._last_coverage
         if cov <= 0.65:
-            alpha = self._alpha                      # 0.99，偏近
+            alpha = self._alpha                      # 0.99 — strongly distance-biased
         elif cov >= 0.85:
-            alpha = 0.40                             # 强调信息增益
+            alpha = 0.40                             # emphasise information gain
         else:
             t     = (cov - 0.65) / (0.85 - 0.65)   # 0→1
             alpha = self._alpha * (1.0 - t) + 0.40 * t
@@ -673,13 +676,14 @@ class ExplorationNode(Node):
         return [(wx, wy) for _, wx, wy in scored[:top_n]]
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  覆盖率计算
+    #  Coverage computation
     # ═══════════════════════════════════════════════════════════════════════
 
     def _compute_coverage(self) -> float:
         """
-        coverage_area×coverage_area 区域内：free / (free + unknown)。
-        coverage_area=15m（≤ arena 边长），避免墙外永久 unknown 压低分母。
+        Coverage = free / (free + unknown) inside the coverage_area × coverage_area region.
+        coverage_area=15 m (≤ arena side) avoids permanent-unknown wall cells
+        deflating the denominator.
         """
         assert self._map is not None
         info = self._map.info
@@ -705,7 +709,7 @@ class ExplorationNode(Node):
         return 0.0 if total == 0 else free_n / total
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  辅助
+    #  Helpers
     # ═══════════════════════════════════════════════════════════════════════
 
     def _robot_pose(self) -> tuple[float, float] | None:
@@ -715,7 +719,7 @@ class ExplorationNode(Node):
         return t.transform.translation.x, t.transform.translation.y
 
     def _robot_tf(self):
-        """返回完整 TF（含姿态），供 heading 更新使用；失败返回 None。"""
+        """Return the full map→base_link transform (including orientation) for heading updates; returns None on failure."""
         try:
             return self._tf_buf.lookup_transform(
                 'map', 'base_link',
@@ -723,7 +727,7 @@ class ExplorationNode(Node):
                 timeout=rclpy.duration.Duration(seconds=0.5),
             )
         except Exception as e:
-            self.get_logger().warn(f'TF map→base_link 失败: {e}', throttle_duration_sec=5.0)
+            self.get_logger().warn(f'TF map→base_link failed: {e}', throttle_duration_sec=5.0)
             return None
 
     def _do_send_goal(self, goal_x: float, goal_y: float, *_: float) -> None:
@@ -731,22 +735,22 @@ class ExplorationNode(Node):
             if self._nav_client.wait_for_server(timeout_sec=0.5):
                 self._nav_server_ready = True
             else:
-                self.get_logger().warn('/navigate_to_pose 暂不可用，跳过本轮',
+                self.get_logger().warn('/navigate_to_pose not yet available, skipping this cycle',
                                        throttle_duration_sec=5.0)
                 return
 
-        # 探索目标不指定到达朝向（单位四元数 w=1.0）：
-        # - 探索只需到达位置，LiDAR 会在任意朝向扫描周围
-        # - 强制 yaw 会导致机器人绕行后需要大幅旋转/倒车纠偏
-        # - Nav2 yaw_goal_tolerance=0.20rad，单位四元数等效于"朝向东方"；
-        #   实际意义：MPPI 规划时不会为了匹配朝向而产生倒车轨迹
+        # Exploration goals do not lock the arrival heading (identity quaternion w=1.0):
+        # - exploration only needs to reach a position; LiDAR scans in all directions
+        # - forcing a yaw causes large rotation/reverse correction after the robot arrives
+        # - Nav2 yaw_goal_tolerance=0.20 rad; identity quaternion is equivalent to "face east"
+        #   and prevents MPPI from generating reverse trajectories just to match a locked yaw
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = PoseStamped()
         goal_msg.pose.header.frame_id = 'map'
         goal_msg.pose.header.stamp    = self.get_clock().now().to_msg()
         goal_msg.pose.pose.position.x = goal_x
         goal_msg.pose.pose.position.y = goal_y
-        goal_msg.pose.pose.orientation.w = 1.0   # 单位四元数，不强制朝向
+        goal_msg.pose.pose.orientation.w = 1.0   # identity quaternion — heading not locked
 
         self._goal_id += 1
         my_id = self._goal_id
@@ -757,7 +761,7 @@ class ExplorationNode(Node):
         self._heading_updated  = False
 
         self.get_logger().info(
-            f'[Nav→] #{my_id}: ({goal_x:.2f},{goal_y:.2f}) 朝向不锁定'
+            f'[Nav→] #{my_id}: ({goal_x:.2f},{goal_y:.2f}) heading unlocked'
         )
         future = self._nav_client.send_goal_async(goal_msg, feedback_callback=self._fb_cb)
         future.add_done_callback(lambda f, gid=my_id: self._resp_cb(f, gid))
@@ -767,12 +771,12 @@ class ExplorationNode(Node):
             return
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().warn(f'[Nav] #{goal_id} 被 Nav2 拒绝，加入黑名单')
+            self.get_logger().warn(f'[Nav] #{goal_id} rejected by Nav2, adding to blacklist')
             if self._current_goal:
                 self._blacklist.append(self._current_goal)
             self._nav_in_progress = False
             return
-        self.get_logger().info(f'[Nav] #{goal_id} 已接受')
+        self.get_logger().info(f'[Nav] #{goal_id} accepted')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(lambda f, gid=goal_id: self._result_cb(f, gid))
 
@@ -781,13 +785,13 @@ class ExplorationNode(Node):
             return
         status = future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info(f'[Nav✓] #{goal_id} 到达 {self._current_goal}')
+            self.get_logger().info(f'[Nav✓] #{goal_id} reached {self._current_goal}')
             if self._current_goal:
                 self._visited.append(self._current_goal)
         elif status == GoalStatus.STATUS_CANCELED:
-            self.get_logger().info(f'[Nav] #{goal_id} 已取消')
+            self.get_logger().info(f'[Nav] #{goal_id} cancelled')
         else:
-            self.get_logger().warn(f'[Nav✗] #{goal_id} 失败 (status={status})，加入黑名单')
+            self.get_logger().warn(f'[Nav✗] #{goal_id} failed (status={status}), adding to blacklist')
             if self._current_goal:
                 self._blacklist.append(self._current_goal)
         self._nav_in_progress = False
@@ -795,15 +799,15 @@ class ExplorationNode(Node):
 
     def _fb_cb(self, feedback_msg) -> None:
         dist = feedback_msg.feedback.distance_remaining
-        self.get_logger().debug(f'  → 剩余 {dist:.2f}m')
+        self.get_logger().debug(f'  → remaining {dist:.2f}m')
 
-        # 参考代码 set_goal_heading()：接近目标时把目标朝向改为机器人当前朝向，
-        # 避免到达位置后 Nav2 强制旋转至出发时锁定的 yaw，从而引发倒车。
+        # Reference: set_goal_heading() — when close to goal, update the goal heading to the
+        # robot's current heading so Nav2 does not force a large yaw rotation on arrival.
         if not self._heading_updated and dist <= self._heading_update_dist:
             tf = self._robot_tf()
             if tf is not None and self._current_goal is not None:
                 gx, gy = self._current_goal
-                # 重发目标：位置不变，朝向改为机器人当前朝向
+                # Re-send goal: same position, heading updated to current robot orientation
                 goal_msg = NavigateToPose.Goal()
                 goal_msg.pose = PoseStamped()
                 goal_msg.pose.header.frame_id = 'map'
@@ -813,7 +817,7 @@ class ExplorationNode(Node):
                 goal_msg.pose.pose.orientation = tf.transform.rotation
                 self._heading_updated = True
                 self.get_logger().info(
-                    f'[Heading] 剩余 {dist:.2f}m，更新目标朝向为当前朝向，避免倒车'
+                    f'[Heading] {dist:.2f}m remaining — updating goal heading to current orientation to avoid reverse'
                 )
                 future = self._nav_client.send_goal_async(
                     goal_msg, feedback_callback=self._fb_cb
@@ -825,12 +829,12 @@ class ExplorationNode(Node):
                 future.add_done_callback(lambda f, gid=my_id: self._resp_cb(f, gid))
 
     def _cancel_nav(self) -> None:
-        """取消当前导航（goal_id 递增使旧回调失效）。"""
+        """Cancel current navigation (incrementing goal_id invalidates stale callbacks)."""
         self._nav_goal_id     = -1
         self._nav_in_progress = False
 
     def _finish(self, reason: str) -> None:
-        self.get_logger().info(f'[Done] 探索完成！{reason}')
+        self.get_logger().info(f'[Done] Exploration complete! {reason}')
         coverage = self._compute_coverage()
         self._pub_status(coverage, [], done=True)
         self._active           = False
@@ -840,36 +844,36 @@ class ExplorationNode(Node):
         self._return_home()
 
     def _return_home(self) -> None:
-        """探索完成后自动导航回启动位置。"""
+        """Navigate back to the start position after exploration is complete."""
         self._return_home_attempt = 0
         if self._return_to_start and self._start_pose is not None:
             self._return_home_target = self._start_pose
         else:
             self._return_home_target = (self._home_x, self._home_y)
             if self._return_to_start:
-                self.get_logger().warn('[Home] 未记录到启动点，退回使用配置 home 坐标')
+                self.get_logger().warn('[Home] start pose not recorded; falling back to configured home coordinates')
 
         self.get_logger().info(
-            f'[Home] {self._return_home_delay:.1f}s 后返回 '
+            f'[Home] returning in {self._return_home_delay:.1f}s to '
             f'({self._return_home_target[0]:.2f}, {self._return_home_target[1]:.2f})'
         )
         self._call_later(self._return_home_delay, self._send_home_goal)
 
     def _send_home_goal(self) -> None:
-        """发送或重试返回起点 goal。"""
+        """Send (or retry) the return-to-start goal."""
         if self._return_home_target is None:
             return
 
         if not self._nav_server_ready:
             if not self._nav_client.wait_for_server(timeout_sec=2.0):
-                self.get_logger().warn('[Home] /navigate_to_pose 不可用，无法返回起点')
+                self.get_logger().warn('[Home] /navigate_to_pose unavailable; cannot return to start')
                 self._schedule_home_retry()
                 return
 
         home_x, home_y = self._return_home_target
         self._return_home_attempt += 1
         self.get_logger().info(
-            f'[Home] 返回起点 attempt={self._return_home_attempt}/'
+            f'[Home] returning to start attempt={self._return_home_attempt}/'
             f'{self._return_home_max_retries + 1} ({home_x:.2f}, {home_y:.2f})'
         )
         goal_msg = NavigateToPose.Goal()
@@ -884,48 +888,48 @@ class ExplorationNode(Node):
         future.add_done_callback(self._home_resp_cb)
 
     def _home_resp_cb(self, future) -> None:
-        """_return_home 目标接受回调：等待导航结果。"""
+        """_return_home goal-accepted callback: wait for navigation result."""
         try:
             goal_handle = future.result()
         except Exception as exc:
-            self.get_logger().warn(f'[Home] 返回请求发送失败: {exc}')
+            self.get_logger().warn(f'[Home] failed to send return goal: {exc}')
             self._schedule_home_retry()
             return
         if not goal_handle.accepted:
-            self.get_logger().warn('[Home] Nav2 拒绝返回请求')
+            self.get_logger().warn('[Home] Nav2 rejected the return goal')
             self._schedule_home_retry()
             return
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._home_result_cb)
 
     def _home_result_cb(self, future) -> None:
-        """_return_home 导航结果回调：记录成功或失败。"""
+        """_return_home navigation result callback: log success or failure."""
         try:
             status = future.result().status
         except Exception as exc:
-            self.get_logger().warn(f'[Home] 返回结果获取失败: {exc}')
+            self.get_logger().warn(f'[Home] failed to get return result: {exc}')
             self._schedule_home_retry()
             return
         home_x, home_y = self._return_home_target or (self._home_x, self._home_y)
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info(
-                f'[Home✓] 已到达起点 ({home_x:.2f}, {home_y:.2f})'
+                f'[Home✓] arrived at start ({home_x:.2f}, {home_y:.2f})'
             )
         else:
-            self.get_logger().warn(f'[Home✗] 返回起点失败 (status={status})')
+            self.get_logger().warn(f'[Home✗] failed to return to start (status={status})')
             self._schedule_home_retry()
 
     def _schedule_home_retry(self) -> None:
         if self._return_home_attempt > self._return_home_max_retries:
-            self.get_logger().warn('[Home] 返回起点重试次数已用完')
+            self.get_logger().warn('[Home] return-to-start retries exhausted')
             return
         self.get_logger().info(
-            f'[Home] {self._return_home_retry_delay:.1f}s 后重试返回起点'
+            f'[Home] retrying return to start in {self._return_home_retry_delay:.1f}s'
         )
         self._call_later(self._return_home_retry_delay, self._send_home_goal)
 
     def _call_later(self, delay_sec: float, callback) -> None:
-        """创建一次性 timer。"""
+        """Create a one-shot timer."""
         timer_holder = {}
 
         def _fire() -> None:
@@ -942,10 +946,10 @@ class ExplorationNode(Node):
         stuck: bool = False,
     ) -> None:
         """
-        发布 /part3/mapping/map_status：
-          进行中：coverage=68% frontiers=3 area=15x15
-          完成：  coverage=done coverage_pct=97%
-          卡住：  coverage=stuck coverage_pct=73%
+        Publish /part3/mapping/map_status:
+          in progress: coverage=68% frontiers=3 area=15x15
+          done:        coverage=done coverage_pct=97%
+          stuck:       coverage=stuck coverage_pct=73%
         """
         if done:
             s = f'coverage=done coverage_pct={coverage:.1%}'
@@ -964,7 +968,7 @@ class ExplorationNode(Node):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  入口
+#  Entry point
 # ════════════════════════════════════════════════════════════════════════════
 
 def main(args=None):

@@ -1,46 +1,46 @@
 # =============================================================================
-# nav2_params.yaml — Nav2 导航栈配置 (M3.C3.1 + C3.2)
+# nav2_params.yaml — Nav2 navigation stack configuration (M3.C3.1 + C3.2)
 # =============================================================================
 #
-# Pioneer 3-AT 参数：
+# Pioneer 3-AT parameters:
 #   robot_radius ≈ 0.3 m   max_vel_x = 0.7 m/s   max_vel_theta = 1.5 rad/s
 #   wheel_separation = 0.394 m   wheel_radius = 0.111 m
 #
-# 与 slam_toolbox (M2) 配合：SLAM 发布 map→odom TF + /map，无需 amcl/map_server。
+# Works with slam_toolbox (M2): SLAM publishes map→odom TF + /map; no amcl/map_server needed.
 #
-# cmd_vel 链路（由 navigation_launch.py 的 remappings 决定）：
+# cmd_vel pipeline (determined by navigation_launch.py remappings):
 #   controller_server → cmd_vel_nav
 #   → velocity_smoother → cmd_vel_smoothed
 #   → collision_monitor → /cmd_vel → Gazebo / Pioneer
 #
-# C3.2：goal_checker 容差收紧（xy=0.15m, yaw=0.10rad）满足
-#       PDF Part 1 Task 5 "correct position and orientation"。
+# C3.2: goal_checker tolerances tightened (xy=0.15 m, yaw=0.10 rad) to satisfy
+#       PDF Part 1 Task 5 "correct position and orientation".
 # =============================================================================
 
 lifecycle_manager_navigation:
   ros__parameters:
-    # bond_timeout：lifecycle_manager 等待每个受管节点建立 bond 的最长时间（秒）。
-    # 默认值 4.0s 在 ARM64/Parallels 上严重不足：
-    #   - DDS peer 发现需要 1-5s
-    #   - 10 个 Nav2 节点（controller/planner/bt_navigator 等）依次初始化
-    #   - 每个节点的 bond handshake 需要时间
-    # 超时后 lifecycle_manager 放弃并退出激活序列，所有节点停在 unconfigured，
-    # /navigate_to_pose action server 永远不出现。
-    # 30.0s 给 ARM64 VM 足够的余量完成全部 bond 建立。
+    # bond_timeout: maximum time (s) for lifecycle_manager to wait for each managed node to establish a bond.
+    # The default 4.0 s is too short on ARM64/Parallels:
+    #   - DDS peer discovery takes 1-5 s
+    #   - 10 Nav2 nodes (controller/planner/bt_navigator etc.) initialise sequentially
+    #   - each node's bond handshake takes additional time
+    # On timeout lifecycle_manager aborts the activation sequence; all nodes stay unconfigured
+    # and /navigate_to_pose action server never appears.
+    # 30.0 s gives the ARM64 VM enough headroom to complete all bond handshakes.
     bond_timeout: 30.0
 
-    # attempt_respawn_on_failure：节点崩溃时是否自动重启。
-    # false：崩溃后直接上报错误，方便调试（不掩盖问题）。
+    # attempt_respawn_on_failure: whether to auto-restart a node that crashes.
+    # false: report the error immediately after crash, making debugging easier (no issue masking).
     attempt_respawn_on_failure: false
 
-    # bond_respawn_max_duration：respawn 等待上限，与 bond_timeout 配合。
+    # bond_respawn_max_duration: upper limit for respawn wait; works together with bond_timeout.
     bond_respawn_max_duration: 10.0
 
 bt_navigator:
   ros__parameters:
     global_frame: map
     robot_base_frame: base_link
-    odom_topic: /odometry/filtered          # EKF 融合输出（非原始 /odom）
+    odom_topic: /odometry/filtered          # EKF fused output (not raw /odom)
     bt_loop_duration: 10
     default_server_timeout: 20
     wait_for_service_timeout: 5000
@@ -56,15 +56,15 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    # controller_frequency 从 20 降到 10 Hz：
-    #   MPPI batch_size=800 × time_steps=40 在 ARM64/Parallels 上跑 20Hz 会 CPU 饱和，
-    #   导致 cmd_vel 发送间隔 >1s → velocity_smoother 超时清零 → robot 停顿。
-    #   10Hz 仍足够平滑（0.1s 一次指令），比饱和的 20Hz 实际响应快。
+    # controller_frequency reduced from 20 to 10 Hz:
+    #   MPPI batch_size=800 × time_steps=40 saturates the CPU at 20 Hz on ARM64/Parallels,
+    #   causing cmd_vel gaps >1 s → velocity_smoother timeout clears velocity → robot stalls.
+    #   10 Hz is still smooth enough (one command per 0.1 s) and faster in practice than a saturated 20 Hz.
     controller_frequency: 20.0
     costmap_update_timeout: 0.30
-    # 仿真时钟下 TF 查询容差：控制器将路径从 map 帧转换到 base_link 帧时
-    # 默认容差仅 0.1s，Gazebo sim_time 略慢于挂钟时会导致首次调用超时
-    # 报错 error_code=203(CONTROLLING_FAILED)。设 0.3s 与 EKF/MPPI 保持一致。
+    # TF query tolerance under sim clock: when the controller transforms the path from map to base_link,
+    # the default 0.1 s tolerance times out on the first call when Gazebo sim_time lags wall time,
+    # producing error_code=203 (CONTROLLING_FAILED). 0.3 s is consistent with EKF/MPPI tolerance.
     transform_tolerance: 0.3
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
@@ -80,23 +80,23 @@ controller_server:
       required_movement_radius: 0.5
       movement_time_allowance: 15.0
 
-    # C3.2: 严格目标容差 — 到达指定位置和朝向（PDF Part 1 Task 5）
+    # C3.2: strict goal tolerances — arrive at specified position and heading (PDF Part 1 Task 5)
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25        # 紧于默认 0.25m
-      yaw_goal_tolerance: 0.20       # 紧于默认 0.25rad（≈ 5.7°）
+      xy_goal_tolerance: 0.25        # tighter than default 0.25 m
+      yaw_goal_tolerance: 0.20       # tighter than default 0.25 rad (≈ 5.7°)
 
-    # MPPI 控制器：随机采样轨迹优化，DiffDrive 运动模型
-    # Pioneer 3-AT 速度上限：vx_max=0.7 m/s, wz_max=1.5 rad/s
+    # MPPI controller: stochastic trajectory optimisation, DiffDrive motion model
+    # Pioneer 3-AT velocity limits: vx_max=0.7 m/s, wz_max=1.5 rad/s
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
-      # time_steps × model_dt = 预测时域：40 × 0.05 = 2.0s（原 56 × 0.05 = 2.8s）
-      # 减少 time_steps 和 batch_size 各约 60%，CPU 占用从约 224M次/s 降到约 32M次/s。
+      # time_steps × model_dt = prediction horizon: 40 × 0.05 = 2.0 s (was 56 × 0.05 = 2.8 s)
+      # Reducing time_steps and batch_size by ≈ 60% each cuts CPU from ≈ 224 M ops/s to ≈ 32 M ops/s.
       time_steps: 60
       model_dt: 0.05
       batch_size: 2200
-      ax_max: 5.0          # Pioneer 3-AT x 加速度上限（仿真加速）
+      ax_max: 5.0          # Pioneer 3-AT max x acceleration (simulation)
       ax_min: -3.0
       ay_max: 3.0
       ay_min: -3.0
@@ -104,17 +104,17 @@ controller_server:
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
-      vx_max: 1.5        # Pioneer 3-AT 线速上限
-      vx_min: -0.3       # 允许小幅后退（恢复行为）
+      vx_max: 1.5        # Pioneer 3-AT max linear velocity
+      vx_min: -0.3       # allow small reverse motion (recovery behaviour)
       vy_max: 0.5
-      wz_max: 2.5        # Pioneer 3-AT 角速上限
+      wz_max: 2.5        # Pioneer 3-AT max angular velocity
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.2
       temperature: 0.3
       gamma: 0.015
       motion_model: "DiffDrive"
-      visualize: false         # 关闭 MPPI 轨迹可视化（建图阶段不需要，且可能因 TF 问题随机器人旋转）
+      visualize: false         # disable MPPI trajectory visualisation (not needed during mapping; may rotate with robot on TF issues)
       regenerate_noises: true
       TrajectoryVisualizer:
         trajectory_step: 5
@@ -142,8 +142,8 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        # 从 5.0 提高到 10.0：加大向前偏好，MPPI 采样倒车轨迹的 cost 翻倍，
-        # 显著减少探索过程中出现的不必要倒车行为。
+        # Raised from 5.0 to 10.0: stronger forward preference doubles the cost of reverse-trajectory
+        # samples, significantly reducing unnecessary reversing during exploration.
         cost_weight: 10.0
         threshold_to_consider: 0.5
       CostCritic:
@@ -191,12 +191,12 @@ local_costmap:
       width: 5
       height: 5
       resolution: 0.05
-      robot_radius: 0.3             # Pioneer 3-AT（宽 0.55m，取保守半径）
+      robot_radius: 0.3             # Pioneer 3-AT (width 0.55 m; conservative inscribed radius)
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55      # 膨胀边界略大于 robot_radius
+        inflation_radius: 0.55      # inflation boundary slightly larger than robot_radius
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -232,10 +232,10 @@ global_costmap:
       robot_radius: 0.3             # Pioneer 3-AT
       resolution: 0.05
       track_unknown_space: true
-      # 全局代价图只使用已建好的静态地图。
-      # /scan 障碍层留给 local_costmap 近场避障；若也写入 global_costmap，
-      # waypoint 阶段会把行驶中的扫描端点长期叠到 map 帧里，再经 inflation
-      # 放大成大片粘连的代价区。
+      # Global costmap uses only the completed static map.
+      # The /scan obstacle layer is reserved for local_costmap near-field avoidance;
+      # adding it to global_costmap would permanently accumulate scan endpoints in the
+      # map frame during waypoint navigation, then inflate them into large merged cost regions.
       plugins: ["static_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -258,12 +258,12 @@ planner_server:
     expected_planner_frequency: 20.0
     planner_plugins: ["GridBased"]
     costmap_update_timeout: 1.0
-    # 与 controller_server 保持一致的 TF 容差（仿真时钟下 0.1s 默认值不够）
+    # TF tolerance consistent with controller_server (the 0.1 s default is insufficient under sim clock)
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
       tolerance: 0.5
-      use_astar: true               # A* 在有障碍环境中比 Dijkstra 更快
-      allow_unknown: true           # 允许规划穿越未知区域（探索阶段地图不完整）
+      use_astar: true               # A* is faster than Dijkstra in obstacle-rich environments
+      allow_unknown: true           # allow planning through unknown space (map is incomplete during exploration)
 
 smoother_server:
   ros__parameters:
@@ -298,10 +298,11 @@ behavior_server:
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
     max_rotational_vel: 2.0
-    # min_rotational_vel 从 1.5 降回 0.8 rad/s：
-    #   1.5 rad/s 旋转时 slam_toolbox ICP 匹配跟不上（每 0.13s 一帧），
-    #   匹配失败退回 odom 估计，导致同一面墙被记录在多个位置（"幽灵墙"）。
-    #   0.8 rad/s 转一圈约 8s，仍比原 0.4 rad/s 快一倍，但 SLAM 扫描匹配可靠。
+    # min_rotational_vel reduced from 1.5 back to 0.8 rad/s:
+    #   At 1.5 rad/s slam_toolbox ICP cannot keep up (one frame per 0.13 s);
+    #   matching failures fall back to odom, recording the same wall at multiple positions ("ghost walls").
+    #   0.8 rad/s takes ≈ 8 s per full rotation, still twice as fast as the original 0.4 rad/s,
+    #   but SLAM scan matching remains reliable.
     min_rotational_vel: 0.8
     rotational_acc_lim: 3.2
 
@@ -340,24 +341,25 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [1.5, 0.0, 2.5] # [0.7, 0.0, 1.5]       # Pioneer 3-AT 速度上限
+    max_velocity: [1.5, 0.0, 2.5] # [0.7, 0.0, 1.5]       # Pioneer 3-AT velocity limits
     min_velocity: [-0.3, 0.0, -1.5]
     max_accel: [4.0, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
-    odom_topic: "/odometry/filtered"     # EKF 融合输出（非原始 /odom）
+    odom_topic: "/odometry/filtered"     # EKF fused output (not raw /odom)
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
-    # velocity_timeout 从 1.0 提高到 2.0s：
-    #   ARM64/Parallels 上 MPPI 计算偶尔超过 1s，smoother 就把速度清零让 robot 停顿。
-    #   2.0s 给 MPPI 更多余量，减少不必要的速度清零。
+    # velocity_timeout raised from 1.0 to 2.0 s:
+    #   On ARM64/Parallels MPPI computation occasionally exceeds 1 s; the smoother then
+    #   clears velocity and the robot stalls. 2.0 s gives MPPI more headroom and reduces
+    #   unnecessary velocity zeroing.
     velocity_timeout: 2.0
 
 collision_monitor:
   ros__parameters:
-    base_frame_id: "base_link"          # Pioneer 3-AT 本体帧（非 base_footprint）
+    base_frame_id: "base_link"          # Pioneer 3-AT body frame (not base_footprint)
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
-    # C_S.1: 改名 cmd_vel → cmd_vel_nav2，由 twist_mux 统一仲裁后输出 /cmd_vel
+    # C_S.1: renamed cmd_vel → cmd_vel_nav2; twist_mux arbitrates and outputs /cmd_vel
     cmd_vel_out_topic: "cmd_vel_nav2"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2

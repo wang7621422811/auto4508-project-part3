@@ -1,29 +1,29 @@
 """
-perception_adapter.py — 感知结果适配器 (C_P.1)
+perception_adapter.py — perception result adapter (C_P.1)
 
-职责
-────
-  1. 订阅 /part3/perception/marker_event（String，来自 greek_detector / colour_detector）
-  2. 解析 key=value 格式，把 detector 发布的 odom 坐标转换到 Nav2 map 坐标
-  3. 按 dedup_radius_m 去重：同一位置相同 marker 时更新 confidence，不新增条目
-  4. 定期发布 /part3/perception/markers (geometry_msgs/PoseArray, map 帧)
-  5. 提供 /part3/perception/get_markers (std_srvs/Trigger) 服务
-
-话题 / 服务契约
+Responsibilities
 ────────────────
-  订阅：
+  1. Subscribe to /part3/perception/marker_event (String, from greek_detector / colour_detector)
+  2. Parse key=value format and transform detector odom coordinates to Nav2 map coordinates
+  3. Deduplicate by dedup_radius_m: update confidence for existing markers at the same position, do not add new entries
+  4. Periodically publish /part3/perception/markers (geometry_msgs/PoseArray, map frame)
+  5. Provide /part3/perception/get_markers (std_srvs/Trigger) service
+
+Topic / service contract
+────────────────────────
+  subscribe:
     /part3/perception/marker_event  std_msgs/String
-  发布：
+  publish:
     /part3/perception/markers       geometry_msgs/PoseArray
-  服务：
+  service:
     /part3/perception/get_markers   std_srvs/Trigger
 
-参数 (camera_bringup.launch.py)
-────────────────────────────────
-  dedup_radius_m   float   1.0                     同位置去重半径（m）
-  publish_rate_hz  float   2.0                     定时发布 PoseArray 频率
-  map_frame        str    'map'                    输出坐标帧
-  odom_frame       str    'odom'                   detector 输出坐标帧
+Parameters (camera_bringup.launch.py)
+──────────────────────────────────────
+  dedup_radius_m   float   1.0    deduplication radius for same-location markers (m)
+  publish_rate_hz  float   2.0    periodic PoseArray publish rate (Hz)
+  map_frame        str    'map'   output coordinate frame
+  odom_frame       str    'odom'  coordinate frame used by detectors
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ except ImportError:
 
 
 class _MarkerEntry:
-    """内存中的单条 marker 记录。"""
+    """Single marker record held in memory."""
     __slots__ = ('marker_type', 'label', 'x', 'y', 'confidence', 'count')
 
     def __init__(self, marker_type: str, label: str, x: float, y: float, confidence: float):
@@ -60,20 +60,20 @@ class _MarkerEntry:
 
 
 class PerceptionAdapterNode(Node):
-    """订阅 marker_event，去重后以 PoseArray 发布，并提供 get_markers 服务。"""
+    """Subscribe to marker_event, deduplicate, publish as PoseArray, and serve get_markers."""
 
     def __init__(self) -> None:
         super().__init__('perception_adapter')
 
-        # ── 参数 ──────────────────────────────────────────────────────────
+        # ── parameters ────────────────────────────────────────────────────
         self.declare_parameter('dedup_radius_m',   2.0)
         self.declare_parameter('publish_rate_hz',  2.0)
         self.declare_parameter('map_frame',        'map')
         self.declare_parameter('odom_frame',       'odom')
-        # 持久化路径：markers.json 保存到此目录，节点重启后自动恢复
+        # persistence path: markers.json is saved here and restored automatically on node restart
         self.declare_parameter('waypoints_save_dir', 'artifacts/waypoints')
-        # 确认阈值：count < N 且 confidence < 0.90 的条目视为"待确认"，不发布给下游
-        # 已观测 N 次或单次 confidence ≥ 0.90 即视为确认，写入 confirmed=true
+        # confirmation threshold: entries with count < N and confidence < 0.90 are treated as "unconfirmed" and not published downstream
+        # an entry is confirmed after N observations or a single observation with confidence >= 0.90; confirmed=true is written to JSON
         self.declare_parameter('min_confirm_count', 2)
 
         gp = self.get_parameter
@@ -91,15 +91,15 @@ class PerceptionAdapterNode(Node):
             self._tf_listener = TransformListener(self._tf_buffer, self)
         else:
             self._tf_buffer = None
-            self.get_logger().warn('tf2 不可用，无法把 marker 坐标转换到 map')
+            self.get_logger().warn('tf2 unavailable — cannot transform marker coordinates to map frame')
 
-        # ── 状态 ──────────────────────────────────────────────────────────
+        # ── state ─────────────────────────────────────────────────────────
         self._markers: list[_MarkerEntry] = []
 
-        # 启动时从文件恢复上次探索的 marker（节点重启后第二趟仍可用）
+        # restore markers from the previous exploration run on startup (available after node restart)
         self._load_markers()
 
-        # ── 订阅 ──────────────────────────────────────────────────────────
+        # ── subscribers ───────────────────────────────────────────────────
         self.create_subscription(
             String,
             '/part3/perception/marker_event',
@@ -107,38 +107,38 @@ class PerceptionAdapterNode(Node):
             10,
         )
 
-        # ── 发布 ──────────────────────────────────────────────────────────
-        # 全部 marker（greek_letter + colour_obstacle）
+        # ── publishers ────────────────────────────────────────────────────
+        # all markers (greek_letter + colour_obstacle)
         self._pub = self.create_publisher(PoseArray, '/part3/perception/markers', 10)
-        # 仅希腊字母 marker，供 waypoint_service 直接读取（无需二次过滤）
+        # greek letter markers only, for waypoint_service to read without secondary filtering
         self._greek_pub = self.create_publisher(PoseArray, '/part3/perception/greek_markers', 10)
 
-        # ── 服务 ──────────────────────────────────────────────────────────
+        # ── services ──────────────────────────────────────────────────────
         self.create_service(
             Trigger,
             '/part3/perception/get_markers',
             self._on_get_markers,
         )
 
-        # ── 定时发布 ──────────────────────────────────────────────────────
+        # ── periodic publish ───────────────────────────────────────────────
         self.create_timer(1.0 / self._rate, self._publish_markers)
 
         self.get_logger().info(
-            f'PerceptionAdapter 就绪  dedup={self._dedup_r}m  '
+            f'PerceptionAdapter ready  dedup={self._dedup_r}m  '
             f'min_confirm={self._min_confirm}  '
             f'frame={self._map_frame}  odom_frame={self._odom_frame}  rate={self._rate}Hz  '
             f'json={self._markers_json_path}'
         )
 
     # ════════════════════════════════════════════════════════════════════
-    # 事件处理
+    # Event handling
     # ════════════════════════════════════════════════════════════════════
 
     def _on_marker_event(self, msg: String) -> None:
         fields = self._parse_event(msg.data.strip())
         if fields is None:
             self.get_logger().warn(
-                f'无法解析 marker_event: "{msg.data}"',
+                f'cannot parse marker_event: "{msg.data}"',
                 throttle_duration_sec=5.0,
             )
             return
@@ -147,7 +147,7 @@ class PerceptionAdapterNode(Node):
         map_xy = self._to_map(fields['x'], fields['y'], marker_frame)
         if map_xy is None:
             self.get_logger().warn(
-                f"marker_event 无法转换到 {self._map_frame}，跳过: {msg.data}",
+                f"cannot transform marker_event to {self._map_frame}, skipping: {msg.data}",
                 throttle_duration_sec=5.0,
             )
             return
@@ -162,14 +162,14 @@ class PerceptionAdapterNode(Node):
         )
 
     def _on_get_markers(self, _request, response: Trigger.Response) -> Trigger.Response:
-        """服务回调：立即发布一次 PoseArray，返回当前 marker 数量。"""
+        """Service callback: publish one PoseArray immediately and return the current marker count."""
         self._publish_markers()
         response.success = True
         response.message = f'markers={len(self._markers)}'
         return response
 
     # ════════════════════════════════════════════════════════════════════
-    # 核心逻辑
+    # Core logic
     # ════════════════════════════════════════════════════════════════════
 
     def _upsert(
@@ -182,7 +182,7 @@ class PerceptionAdapterNode(Node):
         count: int = 1,
         save: bool = True,
     ) -> None:
-        """去重插入：同类 marker 在 dedup_radius_m 内则加权平均更新，否则新增。"""
+        """Deduplicated upsert: same-type marker within dedup_radius_m gets a weighted average update, otherwise a new entry is added."""
         for entry in self._markers:
             if entry.marker_type != marker_type or entry.label != label:
                 continue
@@ -203,7 +203,7 @@ class PerceptionAdapterNode(Node):
             self._save_markers()
 
     def _to_map(self, x: float, y: float, frame: str) -> Optional[tuple[float, float]]:
-        """把 detector 坐标转换成 Nav2 使用的 map 坐标。"""
+        """Transform detector coordinates to Nav2 map coordinates."""
         if not (math.isfinite(x) and math.isfinite(y)):
             return None
         if frame == self._map_frame:
@@ -232,16 +232,16 @@ class PerceptionAdapterNode(Node):
             )
         except Exception as exc:
             self.get_logger().warn(
-                f'TF {frame}->{self._map_frame} 转换失败: {exc}',
+                f'TF {frame}->{self._map_frame} transform failed: {exc}',
                 throttle_duration_sec=5.0,
             )
             return None
 
     def _publish_markers(self) -> None:
-        """定时将去重 marker 列表发布为 PoseArray（map 帧）。
-        只发布已确认条目（count>=min_confirm_count 或 confidence>=0.90），
-        过滤掉低质量的单次误检，防止噪音路点进入 waypoint_service。
-        同时向 /part3/perception/greek_markers 单独发布希腊字母 marker。
+        """Periodically publish the deduplicated marker list as a PoseArray in the map frame.
+        Only confirmed entries (count>=min_confirm_count or confidence>=0.90) are published,
+        filtering out low-quality single-frame false positives to keep noise out of waypoint_service.
+        Greek letter markers are also published separately on /part3/perception/greek_markers.
         """
         now = self.get_clock().now().to_msg()
 
@@ -254,7 +254,7 @@ class PerceptionAdapterNode(Node):
         greek_msg.header.frame_id = self._map_frame
 
         for entry in self._markers:
-            # 未确认条目不发布：防止单次误检污染下游路点规划
+            # skip unconfirmed entries: prevents single false-positive detections from polluting downstream waypoint planning
             if not self._should_export_marker(entry):
                 continue
             pose = Pose()
@@ -268,14 +268,14 @@ class PerceptionAdapterNode(Node):
         self._greek_pub.publish(greek_msg)
 
     # ════════════════════════════════════════════════════════════════════
-    # 工具
+    # Helpers
     # ════════════════════════════════════════════════════════════════════
 
     def _should_export_marker(self, entry: _MarkerEntry) -> bool:
-        """最终导出过滤：Greek 单次识别不发布、不写入 markers.json。
+        """Final export filter: Greek markers seen only once are not published and not written to markers.json.
 
-        注意这里不从 self._markers 删除记录，运行中 count 仍可从 1 累加到 2。
-        如果之后不需要这条硬过滤，移除本函数中的 greek/count 判断即可。
+        Note: entries are NOT removed from self._markers, so count can still accumulate from 1 to 2 at runtime.
+        To remove this hard filter later, delete the greek/count check inside this function.
         """
         if entry.marker_type == 'greek' and entry.count <= 1:
             return False
@@ -283,7 +283,7 @@ class PerceptionAdapterNode(Node):
 
     @staticmethod
     def _parse_event(data: str) -> Optional[dict]:
-        """解析 'key=value key=value ...' 格式。缺少必需字段时返回 None。"""
+        """Parse 'key=value key=value ...' format. Returns None if any required field is missing."""
         fields: dict[str, str] = {}
         for token in data.split():
             if '=' in token:
@@ -303,7 +303,7 @@ class PerceptionAdapterNode(Node):
                 'y':          float(fields['y']),
                 'confidence': float(fields['confidence']),
             }
-            # 可选像素坐标，用于深度反投影定位
+            # optional pixel coordinates for depth back-projection localisation
             if 'cx_px' in fields:
                 result['cx_px'] = float(fields['cx_px'])
             if 'cy_px' in fields:
@@ -313,13 +313,13 @@ class PerceptionAdapterNode(Node):
             return None
 
     # ════════════════════════════════════════════════════════════════════
-    # 持久化（JSON 文件）
+    # Persistence (JSON file)
     # ════════════════════════════════════════════════════════════════════
 
     def _save_markers(self) -> None:
-        """把当前 _markers 列表序列化到 markers.json，写失败只打 warn 不崩溃。
-        confirmed=true 表示 count>=min_confirm_count 或 confidence>=0.90，
-        Greek 单次识别不保存，避免 eta 等单帧误检污染最终路点。"""
+        """Serialise the current _markers list to markers.json; a write failure logs a warning and does not crash.
+        confirmed=true means count>=min_confirm_count or confidence>=0.90.
+        Single-observation Greek detections are not saved, preventing false positives like eta from polluting final waypoints."""
         try:
             os.makedirs(os.path.dirname(self._markers_json_path), exist_ok=True)
             data = [
@@ -340,12 +340,12 @@ class PerceptionAdapterNode(Node):
                 json.dump(data, fh, indent=2, ensure_ascii=False)
         except Exception as exc:
             self.get_logger().warn(
-                f'[PerceptionAdapter] markers.json 写入失败: {exc}',
+                f'[PerceptionAdapter] markers.json write failed: {exc}',
                 throttle_duration_sec=10.0,
             )
 
     def _load_markers(self) -> None:
-        """启动时从 markers.json 恢复上次探索的 marker 列表。"""
+        """Restore the marker list from markers.json on startup."""
         if not os.path.exists(self._markers_json_path):
             return
         try:
@@ -366,17 +366,17 @@ class PerceptionAdapterNode(Node):
             if raw_count != len(self._markers):
                 self._save_markers()
             self.get_logger().info(
-                f'[PerceptionAdapter] 从文件恢复 {len(self._markers)} 个 marker '
-                f'（原始 {raw_count} 条，已去重）: '
+                f'[PerceptionAdapter] restored {len(self._markers)} markers from file '
+                f'(raw {raw_count} entries, after deduplication): '
                 f'{self._markers_json_path}'
             )
         except Exception as exc:
             self.get_logger().warn(
-                f'[PerceptionAdapter] markers.json 加载失败（将从空列表开始）: {exc}'
+                f'[PerceptionAdapter] markers.json load failed (starting from empty list): {exc}'
             )
 
     def get_markers_list(self) -> list[_MarkerEntry]:
-        """供外部代码直接读取当前 marker 列表（单测用）。"""
+        """Return a copy of the current marker list (for unit tests)."""
         return list(self._markers)
 
 

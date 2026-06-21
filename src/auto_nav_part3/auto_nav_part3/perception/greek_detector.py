@@ -106,8 +106,8 @@ class GreekDetectorNode(Node):
         self._robot_x: float     = 0.0
         self._robot_y: float     = 0.0
         self._robot_yaw: float   = 0.0
-        self._latest_scan        = None          # 最新 LaserScan 消息
-        self._scan_stamp: float  = 0.0           # 上次 scan 到达的 monotonic 时间
+        self._latest_scan        = None          # most recent LaserScan message
+        self._scan_stamp: float  = 0.0           # monotonic time of last scan arrival
         self._cam_hfov: float    = 1.089         # OAK-D / sim rgbd_camera HFOV ≈ 62°
         self._last_detected: dict[str, float] = {}
         # label -> [(robot_x, robot_y), ...] positions where photo was saved
@@ -151,9 +151,9 @@ class GreekDetectorNode(Node):
         self._latest_scan = msg
         self._scan_stamp  = time.monotonic()
         # self.get_logger().debug(
-        #     f"[SCAN] {len(msg.ranges)} 光束  "
-        #     f"角度 [{math.degrees(msg.angle_min):.0f}°, {math.degrees(msg.angle_max):.0f}°]  "
-        #     f"测距范围 [{msg.range_min:.2f}, {msg.range_max:.2f}]m",
+        #     f"[SCAN] {len(msg.ranges)} beams  "
+        #     f"angle [{math.degrees(msg.angle_min):.0f}°, {math.degrees(msg.angle_max):.0f}°]  "
+        #     f"range [{msg.range_min:.2f}, {msg.range_max:.2f}]m",
         #     throttle_duration_sec=10.0,
         # )
 
@@ -209,22 +209,22 @@ class GreekDetectorNode(Node):
             )
             return
 
-        # ── 雷达可用性检查（早期退出，避免后续无效计算）────────────────────
+        # ── lidar availability check (early exit to avoid wasted computation) ──
         if self._latest_scan is None:
             self.get_logger().warn(
-                "[GREEK] /scan 尚未收到，跳过本帧检测",
+                "[GREEK] /scan not yet received, skipping detection this frame",
                 throttle_duration_sec=5.0,
             )
             return
         staleness = time.monotonic() - self._scan_stamp
         if staleness > 1.0:
             self.get_logger().warn(
-                f"[GREEK] 雷达数据已过期 {staleness:.1f}s（/scan 话题可能已停止），跳过帧",
+                f"[GREEK] lidar data stale by {staleness:.1f}s (/scan may have stopped), skipping frame",
                 throttle_duration_sec=5.0,
             )
             return
 
-        # Step 1 — 必须先找到白色/灰色板块，才能裁切出字母区域
+        # Step 1 — detect the white/grey paper board before cropping the letter region
         paper_result = self._detect_paper(bgr)
         if paper_result is None:
             # self.get_logger().debug(
@@ -257,9 +257,9 @@ class GreekDetectorNode(Node):
         if self._on_cooldown(label):
             return
 
-        # Step 4 — 用雷达测距估算障碍物 odom 坐标
+        # Step 4 — estimate obstacle odom position using lidar range
         fx = (bgr.shape[1] / 2.0) / math.tan(self._cam_hfov / 2.0)
-        # bearing: 正值=图像左侧=机器人左侧(+Y), 负值=右侧(-Y)
+        # bearing: positive = left in image = robot left (+Y), negative = right (-Y)
         bearing_rad = math.atan2((bgr.shape[1] / 2.0) - cx_px, fx)
         beam_idx = int(round(
             (bearing_rad - self._latest_scan.angle_min)
@@ -269,12 +269,12 @@ class GreekDetectorNode(Node):
             self._latest_scan, cx_px, bgr.shape[1],
             self._cam_hfov,
             self._robot_x, self._robot_y, self._robot_yaw,
-            half_depth_m=0.0,   # 桶深度补偿忽略不计
+            half_depth_m=0.0,   # barrel depth compensation negligible
         )
         if obs is None:
             self.get_logger().warn(
-                f"[GREEK] {label}: 雷达方位角 {math.degrees(bearing_rad):.1f}° "
-                f"(beam {beam_idx}/{len(self._latest_scan.ranges)}) 无有效测距，跳过",
+                f"[GREEK] {label}: lidar bearing {math.degrees(bearing_rad):.1f}° "
+                f"(beam {beam_idx}/{len(self._latest_scan.ranges)}) no valid range, skipping",
                 throttle_duration_sec=5.0,
             )
             return
@@ -289,7 +289,7 @@ class GreekDetectorNode(Node):
             f"obs=({obs_x:.3f},{obs_y:.3f})"
         )
 
-        # Step 5 — 新空间位置才存图：用观测坐标去重，防止绕桶行走重复写入同一物体
+        # Step 5 — save photo only at a new location: deduplicate by observation coordinates to avoid re-saving when circling the barrel
         img_path = ""
         if self._is_new_location(label, obs_x, obs_y):
             ink_vis  = (tensor[0, 0] * 255).astype(np.uint8)
@@ -311,8 +311,8 @@ class GreekDetectorNode(Node):
         """
         h, w = bgr.shape[:2]
         hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        # 仿真白纸 value≈220-240，灰色背景墙/地面 value≈100-160。
-        # 阈值 190 可干净分离白纸与背景，避免背景与纸张 merge 成巨大 blob 被误拒。
+        # Simulated white paper value≈220-240; grey background wall/floor value≈100-160.
+        # Threshold 190 cleanly separates paper from background, avoiding a merged blob that would be rejected.
         thresh = cv2.inRange(hsv, (0, 0, 190), (180, 80, 255))
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
@@ -326,26 +326,26 @@ class GreekDetectorNode(Node):
         best_area = 0
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # 面积下限 0.5%（允许方块在 4-5m 外被检测），上限 60% 排除背景
+            # area lower bound 0.5% (allows detection at 4-5 m), upper bound 60% excludes background
             if area < 0.005 * h * w:
                 continue
             if area > 0.60 * h * w:
                 continue
             _bx, _by, _bw, _bh = cv2.boundingRect(cnt)
-            if _by <= 3:                       # 顶部贴边 → 天空/背景
+            if _by <= 3:                       # touching top edge → sky/background
                 continue
-            if _by + _bh >= h - 10:            # 底部贴边 → 地面标线
+            if _by + _bh >= h - 10:            # touching bottom edge → ground markings
                 continue
             aspect = _bw / max(_bh, 1)
-            if aspect > 5.0 or aspect < 0.2:   # 极细长条 → 非板块
+            if aspect > 5.0 or aspect < 0.2:   # extreme elongation → not a board
                 continue
             peri   = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
             n = len(approx)
             if 4 <= n <= 6 and area > best_area:
-                # 允许 4-6 角近似（仿真方块斜视时可能 5-6 角）
+                # allow 4-6 corner approximation (simulated cube at oblique angle may give 5-6 corners)
                 best_area = area
-                # 强制取凸包并拟合为 4 角矩形
+                # force convex hull and fit as 4-corner rectangle
                 hull = cv2.convexHull(cnt)
                 hull_approx = cv2.approxPolyDP(
                     hull, 0.04 * cv2.arcLength(hull, True), True)
@@ -393,7 +393,7 @@ class GreekDetectorNode(Node):
         """
         grey   = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         grey   = cv2.GaussianBlur(grey, (5, 5), 0)
-        # blockSize=15, C=6 — 仿真低对比度笔迹需要更宽松的自适应阈值
+        # blockSize=15, C=6 — simulated low-contrast ink strokes need a more permissive adaptive threshold
         thresh = cv2.adaptiveThreshold(
             grey, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -434,8 +434,8 @@ class GreekDetectorNode(Node):
     # ════════════════════════════════════════════════════════════════════
 
     def _is_new_location(self, label: str, obs_x: float, obs_y: float) -> bool:
-        """估算 marker 坐标与所有已记录位置均超过 new_object_dist_m 时返回 True。
-        用观测坐标而非机器人坐标，避免绕桶行走时同一物体被重复上报。"""
+        """Return True if the estimated marker position is more than new_object_dist_m from all previously recorded positions.
+        Uses observation coordinates rather than robot position to avoid re-reporting the same barrel when orbiting it."""
         positions = self._saved_positions.get(label, [])
         if not positions:
             return True
